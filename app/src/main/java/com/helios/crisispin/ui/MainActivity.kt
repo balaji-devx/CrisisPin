@@ -10,37 +10,52 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
+import androidx.compose.animation.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.helios.crisispin.ble.BleAdvertiser
 import com.helios.crisispin.ble.BleScanner
+import com.helios.crisispin.ui.screens.*
 import com.helios.crisispin.ui.theme.CrisisPinTheme
 import com.helios.crisispin.utils.AlertManager
 import com.helios.crisispin.utils.PermissionHelper
+
+sealed class Screen {
+    object Splash : Screen()
+    object Onboarding : Screen()
+    object Permission : Screen()
+    object Home : Screen()
+    data class AlertSent(val alertType: String) : Screen()
+    data class IncomingAlert(val alertType: String) : Screen()
+    object History : Screen()
+    object Settings : Screen()
+}
 
 class MainActivity : ComponentActivity() {
 
     private var bleAdvertiser: BleAdvertiser? = null
     private var bleScanner: BleScanner? = null
     private var alertManager: AlertManager? = null
+
     private var receivedMessageState by mutableStateOf("No Alerts")
+    private var isBroadcastingState by mutableStateOf(false)
+    private var bleActiveState by mutableStateOf(false)
+    private var nearbyDevicesState by mutableStateOf(0)
+    private var alertsReceivedState by mutableStateOf(0)
+    private var currentScreen by mutableStateOf<Screen>(Screen.Splash)
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
             when (state) {
                 BluetoothAdapter.STATE_ON -> {
-                    Log.d("BLE", "Bluetooth turned ON — starting scanner")
+                    bleActiveState = true
                     bleScanner?.startScanning()
                 }
                 BluetoothAdapter.STATE_OFF -> {
-                    Log.d("BLE", "Bluetooth turned OFF — stopping scanner")
+                    bleActiveState = false
                     bleScanner?.stopScanning()
                     bleAdvertiser?.stopAdvertising()
+                    isBroadcastingState = false
                 }
             }
         }
@@ -53,15 +68,85 @@ class MainActivity : ComponentActivity() {
 
         if (PermissionHelper.hasPermissions(this)) {
             setupBle()
-        } else {
-            PermissionHelper.requestPermissions(this)
         }
 
         setContent {
             CrisisPinTheme {
-                CrisisPinApp(
-                    bleAdvertiser = bleAdvertiser,
-                    receivedMessage = receivedMessageState
+                AppNavigation()
+            }
+        }
+    }
+
+    @Composable
+    fun AppNavigation() {
+        AnimatedContent(
+            targetState = currentScreen,
+            transitionSpec = {
+                fadeIn() togetherWith fadeOut()
+            },
+            label = "nav"
+        ) { screen ->
+            when (screen) {
+                is Screen.Splash -> SplashScreen(
+                    onFinished = { currentScreen = Screen.Onboarding }
+                )
+                is Screen.Onboarding -> OnboardingScreen(
+                    onFinished = {
+                        currentScreen = if (PermissionHelper.hasPermissions(this@MainActivity))
+                            Screen.Home
+                        else
+                            Screen.Permission
+                    }
+                )
+                is Screen.Permission -> PermissionScreen(
+                    onPermissionsGranted = {
+                        PermissionHelper.requestPermissions(this@MainActivity)
+                        currentScreen = Screen.Home
+                    }
+                )
+                is Screen.Home -> HomeScreen(
+                    bleActive = bleActiveState,
+                    isBroadcasting = isBroadcastingState,
+                    nearbyDevices = nearbyDevicesState,
+                    alertsReceived = alertsReceivedState,
+                    receivedMessage = receivedMessageState,
+                    onSendAlert = { alertType ->
+                        bleAdvertiser?.startAdvertising(alertType)
+                        isBroadcastingState = true
+                        currentScreen = Screen.AlertSent(alertType)
+                    },
+                    onStopAlert = {
+                        bleAdvertiser?.stopAdvertising()
+                        isBroadcastingState = false
+                    },
+                    onNavigate = { dest ->
+                        currentScreen = when (dest) {
+                            "history" -> Screen.History
+                            "settings" -> Screen.Settings
+                            else -> Screen.Home
+                        }
+                    }
+                )
+                is Screen.AlertSent -> AlertSentScreen(
+                    alertType = screen.alertType,
+                    onCancel = {
+                        bleAdvertiser?.stopAdvertising()
+                        isBroadcastingState = false
+                        currentScreen = Screen.Home
+                    }
+                )
+                is Screen.IncomingAlert -> IncomingAlertScreen(
+                    alertType = screen.alertType,
+                    onAcknowledge = { currentScreen = Screen.Home },
+                    onCallSecurity = { currentScreen = Screen.Home }
+                )
+                is Screen.History -> AlertHistoryScreen(
+                    alerts = emptyList(),
+                    onBack = { currentScreen = Screen.Home }
+                )
+                is Screen.Settings -> SettingsScreen(
+                    bleActive = bleActiveState,
+                    onBack = { currentScreen = Screen.Home }
                 )
             }
         }
@@ -84,7 +169,11 @@ class MainActivity : ComponentActivity() {
         bleScanner = BleScanner(this) { message ->
             runOnUiThread {
                 receivedMessageState = message
-                alertManager?.triggerAlert(message) // vibrate + speak on receive
+                alertsReceivedState++
+                nearbyDevicesState = (nearbyDevicesState + 1).coerceAtMost(99)
+                alertManager?.triggerAlert(message)
+                // Show incoming alert screen
+                currentScreen = Screen.IncomingAlert(message)
             }
         }
 
@@ -93,95 +182,16 @@ class MainActivity : ComponentActivity() {
 
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter.isEnabled) {
-            Log.d("BLE", "Bluetooth already ON — starting scanner immediately")
+            bleActiveState = true
             bleScanner?.startScanning()
-        } else {
-            Log.d("BLE", "Bluetooth is OFF — waiting for STATE_ON broadcast")
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            unregisterReceiver(bluetoothStateReceiver)
-        } catch (e: Exception) {
-            Log.e("BLE", "Receiver not registered: ${e.message}")
-        }
+        try { unregisterReceiver(bluetoothStateReceiver) } catch (e: Exception) { }
         bleAdvertiser?.stopAdvertising()
         bleScanner?.stopScanning()
         alertManager?.release()
-    }
-}
-
-@Composable
-fun CrisisPinApp(
-    bleAdvertiser: BleAdvertiser?,
-    receivedMessage: String
-) {
-    var statusText by remember { mutableStateOf("System Ready") }
-    var isBroadcasting by remember { mutableStateOf(false) }
-
-    Scaffold(modifier = Modifier.fillMaxSize()) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "Status: $statusText",
-                style = MaterialTheme.typography.headlineSmall
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Latest Received Alert:",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Text(
-                        text = receivedMessage,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Button(
-                onClick = {
-                    if (bleAdvertiser == null) return@Button
-                    if (!isBroadcasting) {
-                        bleAdvertiser.startAdvertising("SOS")
-                        statusText = "Broadcasting Emergency"
-                        isBroadcasting = true
-                    } else {
-                        bleAdvertiser.stopAdvertising()
-                        statusText = "System Ready"
-                        isBroadcasting = false
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isBroadcasting)
-                        MaterialTheme.colorScheme.error
-                    else
-                        MaterialTheme.colorScheme.primary
-                )
-            ) {
-                Text(if (!isBroadcasting) "SEND EMERGENCY ALERT" else "STOP BROADCAST")
-            }
-        }
     }
 }
