@@ -24,116 +24,137 @@ import com.helios.crisispin.ui.theme.*
 @Composable
 fun SettingsScreen(
     bleActive: Boolean,
+    alertSoundEnabled: Boolean,
+    vibrationEnabled: Boolean,
+    onAlertSoundToggle: (Boolean) -> Unit,
+    onVibrationToggle: (Boolean) -> Unit,
+    onBluetoothToggle: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
-    var authorityMode by remember { mutableStateOf(false) }
-    var backgroundRelay by remember { mutableStateOf(false) }
-    var alertSound by remember { mutableStateOf(true) }
-    var vibration by remember { mutableStateOf(true) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(DarkNavy)
             .verticalScroll(rememberScrollState())
     ) {
-        // Header
+        // Status bar padding
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.height(8.dp))
+
+        // Header — back button on LEFT
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("Settings", color = Color.White, fontWeight = FontWeight.Black, fontSize = 24.sp)
-                Text("Configure CrisisPin", color = TextSecondary, fontSize = 13.sp)
-            }
             IconButton(onClick = onBack) {
-                Icon(Icons.Rounded.ArrowBack, null, tint = TextPrimary)
+                Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+            }
+            Spacer(Modifier.width(4.dp))
+            Column {
+                Text("Settings", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp)
+                Text("Configure CrisisPin", color = TextSecondary, fontSize = 12.sp)
             }
         }
 
+        Spacer(Modifier.height(8.dp))
+
         Column(modifier = Modifier.padding(horizontal = 20.dp)) {
 
-            // BLE Status section
+            // ── Bluetooth ─────────────────────────────────────────────
             SectionLabel("Bluetooth")
             SettingsCard {
-                SettingsStatusRow(
+                // Real BT toggle — calls enableBtLauncher or adapter.disable()
+                SettingsToggleRow(
                     icon = Icons.Rounded.Bluetooth,
                     iconColor = if (bleActive) ActiveGreen else OffGray,
-                    title = "Bluetooth Status",
-                    subtitle = if (bleActive) "Connected & Scanning" else "Disconnected",
-                    trailing = {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (bleActive) ActiveGreen.copy(0.15f) else OffGray.copy(0.15f))
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                if (bleActive) "ON" else "OFF",
-                                color = if (bleActive) ActiveGreen else OffGray,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+                    title = "Bluetooth",
+                    subtitle = if (bleActive) "On · Scanning for alerts" else "Off · Tap to enable",
+                    checked = bleActive,
+                    onCheckedChange = onBluetoothToggle
                 )
             }
 
             Spacer(Modifier.height(20.dp))
 
-            // Alerts section
-            SectionLabel("Alerts")
+            // ── Alerts ────────────────────────────────────────────────
+            SectionLabel("Alert Notifications")
             SettingsCard {
+                // Real sound toggle — passed to AlertManager.setSoundEnabled()
                 SettingsToggleRow(
                     icon = Icons.Rounded.VolumeUp,
                     iconColor = Color(0xFF1E88E5),
                     title = "Alert Sound",
-                    subtitle = "Play voice announcement on alert",
-                    checked = alertSound,
-                    onCheckedChange = { alertSound = it }
+                    subtitle = if (alertSoundEnabled) "Voice announcement on alert · On" else "Muted",
+                    checked = alertSoundEnabled,
+                    onCheckedChange = onAlertSoundToggle
                 )
-                Divider(color = Divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 56.dp))
+                HorizontalDivider(
+                    color = Divider,
+                    thickness = 0.5.dp,
+                    modifier = Modifier.padding(start = 56.dp)
+                )
+                // Real vibration toggle — passed to AlertManager.setVibrationEnabled()
                 SettingsToggleRow(
                     icon = Icons.Rounded.Vibration,
                     iconColor = PanicPurple,
                     title = "Vibration",
-                    subtitle = "Vibrate SOS pattern on alert",
-                    checked = vibration,
-                    onCheckedChange = { vibration = it }
+                    subtitle = if (vibrationEnabled) "SOS pattern on alert · On" else "Vibration off",
+                    checked = vibrationEnabled,
+                    onCheckedChange = onVibrationToggle
                 )
             }
 
             Spacer(Modifier.height(20.dp))
 
-            // Advanced section
+            // ── Advanced ──────────────────────────────────────────────
             SectionLabel("Advanced")
             SettingsCard {
+                var authorityMode by remember { mutableStateOf(false) }
                 SettingsToggleRow(
                     icon = Icons.Rounded.Shield,
                     iconColor = EmergencyRed,
                     title = "Authority Mode",
-                    subtitle = "Mark device as security personnel",
+                    subtitle = "Mark this device as security personnel",
                     checked = authorityMode,
                     onCheckedChange = { authorityMode = it }
                 )
-                Divider(color = Divider, thickness = 0.5.dp, modifier = Modifier.padding(start = 56.dp))
-                SettingsToggleRow(
+                HorizontalDivider(
+                    color = Divider,
+                    thickness = 0.5.dp,
+                    modifier = Modifier.padding(start = 56.dp)
+                )
+                SettingsInfoRow(
                     icon = Icons.Rounded.Hub,
                     iconColor = FireOrange,
-                    title = "Background Relay",
-                    subtitle = "Future: Extend mesh relay range",
-                    checked = backgroundRelay,
-                    onCheckedChange = { backgroundRelay = it },
-                    badge = "Soon"
+                    title = "Background Mesh Relay",
+                    subtitle = "Extend alert range via device relay",
+                    badge = "Coming Soon"
                 )
             }
 
             Spacer(Modifier.height(20.dp))
 
-            // About section
+            // ── Status summary card ───────────────────────────────────
+            SectionLabel("Status")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(SurfaceCard)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                StatusRow("Bluetooth", if (bleActive) "Active" else "Off", if (bleActive) ActiveGreen else OffGray)
+                StatusRow("Sound Alerts", if (alertSoundEnabled) "Enabled" else "Disabled", if (alertSoundEnabled) ActiveGreen else OffGray)
+                StatusRow("Vibration", if (vibrationEnabled) "Enabled" else "Disabled", if (vibrationEnabled) ActiveGreen else OffGray)
+                StatusRow("Network", "Decentralized BLE", ActiveGreen)
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // ── About ─────────────────────────────────────────────────
             SectionLabel("About")
             SettingsCard {
                 Row(
@@ -153,11 +174,16 @@ fun SettingsScreen(
                         Text("📍", fontSize = 24.sp)
                     }
                     Column {
-                        Text("CrisisPin", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        Text("Version 1.0.0 • Helios", color = TextSecondary, fontSize = 12.sp)
+                        Text(
+                            "CrisisPin",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                        Text("Version 1.0.0 · Helios", color = TextSecondary, fontSize = 12.sp)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Internet-free emergency communication using BLE.",
+                            "Internet-free emergency communication using BLE. Works anywhere, no network required.",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             lineHeight = 17.sp
@@ -166,8 +192,19 @@ fun SettingsScreen(
                 }
             }
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(40.dp))
         }
+    }
+}
+
+@Composable
+fun StatusRow(label: String, value: String, valueColor: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = TextSecondary, fontSize = 13.sp)
+        Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -189,61 +226,7 @@ fun SettingsToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    badge: String? = null
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(iconColor.copy(0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, null, tint = iconColor, modifier = Modifier.size(20.dp))
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                if (badge != null) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(OffGray.copy(0.3f))
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text(badge, color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-            Text(subtitle, color = TextSecondary, fontSize = 11.sp)
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = EmergencyRed,
-                uncheckedThumbColor = TextMuted,
-                uncheckedTrackColor = SurfaceElevated
-            )
-        )
-    }
-}
-
-@Composable
-fun SettingsStatusRow(
-    icon: ImageVector,
-    iconColor: Color,
-    title: String,
-    subtitle: String,
-    trailing: @Composable () -> Unit
+    onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -265,6 +248,54 @@ fun SettingsStatusRow(
             Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             Text(subtitle, color = TextSecondary, fontSize = 11.sp)
         }
-        trailing()
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = EmergencyRed,
+                uncheckedThumbColor = TextMuted,
+                uncheckedTrackColor = SurfaceElevated
+            )
+        )
+    }
+}
+
+@Composable
+fun SettingsInfoRow(
+    icon: ImageVector,
+    iconColor: Color,
+    title: String,
+    subtitle: String,
+    badge: String
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(iconColor.copy(0.15f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = iconColor, modifier = Modifier.size(20.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(subtitle, color = TextSecondary, fontSize = 11.sp)
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(OffGray.copy(0.25f))
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Text(badge, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }

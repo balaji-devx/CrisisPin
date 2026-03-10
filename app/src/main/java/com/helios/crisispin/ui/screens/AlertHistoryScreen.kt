@@ -1,6 +1,7 @@
 package com.helios.crisispin.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,69 +15,98 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helios.crisispin.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.*
 
+// Data model with real timestamp
 data class AlertHistoryItem(
     val id: String,
     val type: String,
     val emoji: String,
-    val color: Color,
-    val timestamp: String,
-    val direction: String // "sent" or "received"
+    val colorHex: Int,
+    val timestampMs: Long,   // Real system time in ms
+    val direction: String    // "sent" or "received"
 )
+
+fun AlertHistoryItem.formattedTime(): String {
+    val now = System.currentTimeMillis()
+    val diff = now - timestampMs
+    return when {
+        diff < 60_000 -> "Just now"
+        diff < 3_600_000 -> "${diff / 60_000} min ago"
+        diff < 86_400_000 -> "${diff / 3_600_000} hr ago"
+        diff < 172_800_000 -> "Yesterday"
+        else -> SimpleDateFormat("dd MMM", Locale.getDefault()).format(Date(timestampMs))
+    }
+}
 
 @Composable
 fun AlertHistoryScreen(
     alerts: List<AlertHistoryItem>,
     onBack: () -> Unit
 ) {
-    val mockAlerts = listOf(
-        AlertHistoryItem("1", "SOS Emergency", "🚨", EmergencyRed, "2 mins ago", "received"),
-        AlertHistoryItem("2", "Medical Alert", "🏥", MedicalBlue, "10 mins ago", "sent"),
-        AlertHistoryItem("3", "Panic Alert", "⚠️", PanicPurple, "25 mins ago", "received"),
-        AlertHistoryItem("4", "Fire Alert", "🔥", FireOrange, "1 hour ago", "received"),
-        AlertHistoryItem("5", "SOS Emergency", "🚨", EmergencyRed, "Yesterday", "sent"),
-        AlertHistoryItem("6", "General Help", "🆘", GeneralGreen, "Yesterday", "received"),
-    )
+    var activeFilter by remember { mutableStateOf("All") }
 
-    val displayAlerts = if (alerts.isEmpty()) mockAlerts else alerts
+    val filteredAlerts = when (activeFilter) {
+        "Received" -> alerts.filter { it.direction == "received" }
+        "Sent" -> alerts.filter { it.direction == "sent" }
+        else -> alerts
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(DarkNavy)
     ) {
-        // Header
+        // Status bar spacer
+        Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        Spacer(Modifier.height(8.dp))
+
+        // Header — back button on LEFT like common apps
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("Alert History", color = Color.White, fontWeight = FontWeight.Black, fontSize = 24.sp)
-                Text("${displayAlerts.size} total alerts", color = TextSecondary, fontSize = 13.sp)
-            }
             IconButton(onClick = onBack) {
-                Icon(Icons.Rounded.ArrowBack, null, tint = TextPrimary)
+                Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+            }
+            Spacer(Modifier.width(4.dp))
+            Column {
+                Text(
+                    "Alert History",
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 20.sp
+                )
+                Text(
+                    "${alerts.size} total • ${alerts.count { it.direction == "sent" }} sent · ${alerts.count { it.direction == "received" }} received",
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
             }
         }
 
-        // Filter chips
+        Spacer(Modifier.height(8.dp))
+
+        // Filter chips — functional, filter list in real time
         Row(
             modifier = Modifier.padding(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             listOf("All", "Received", "Sent").forEach { filter ->
-                val isSelected = filter == "All"
+                val isSelected = activeFilter == filter
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
                         .background(if (isSelected) EmergencyRed else SurfaceCard)
+                        .clickable { activeFilter = filter }
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text(
@@ -91,22 +121,51 @@ fun AlertHistoryScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Alert list
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(displayAlerts) { alert ->
-                AlertHistoryCard(alert)
+        if (filteredAlerts.isEmpty()) {
+            // Empty state
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("📭", fontSize = 48.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        when (activeFilter) {
+                            "Sent" -> "No alerts sent yet"
+                            "Received" -> "No alerts received yet"
+                            else -> "No alerts yet"
+                        },
+                        color = TextSecondary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Alerts will appear here when sent or received",
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                }
             }
-            item { Spacer(Modifier.height(16.dp)) }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(filteredAlerts, key = { it.id }) { alert ->
+                    AlertHistoryCard(alert)
+                }
+                item { Spacer(Modifier.height(16.dp)) }
+            }
         }
     }
 }
 
 @Composable
 fun AlertHistoryCard(alert: AlertHistoryItem) {
+    val color = Color(alert.colorHex)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -121,46 +180,71 @@ fun AlertHistoryCard(alert: AlertHistoryItem) {
             modifier = Modifier
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(alert.color.copy(alpha = 0.15f)),
+                .background(color.copy(alpha = 0.15f)),
             contentAlignment = Alignment.Center
         ) {
             Text(alert.emoji, fontSize = 22.sp)
         }
 
-        // Info
         Column(modifier = Modifier.weight(1f)) {
-            Text(alert.type, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(
+                alert.type,
+                color = TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp
+            )
             Spacer(Modifier.height(3.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Rounded.Schedule, null, tint = TextMuted, modifier = Modifier.size(12.dp))
-                Text(alert.timestamp, color = TextSecondary, fontSize = 12.sp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.AccessTime,
+                    null,
+                    tint = TextMuted,
+                    modifier = Modifier.size(11.dp)
+                )
+                // Real timestamp formatted relative to now
+                Text(alert.formattedTime(), color = TextSecondary, fontSize = 11.sp)
             }
         }
 
-        // Direction badge
+        // Direction badge — real sent/received from BLE events
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(
-                    if (alert.direction == "sent") EmergencyRed.copy(0.15f) else ActiveGreen.copy(0.1f)
+                    if (alert.direction == "sent") EmergencyRed.copy(0.15f)
+                    else ActiveGreen.copy(0.1f)
                 )
                 .padding(horizontal = 10.dp, vertical = 5.dp)
         ) {
-            Text(
-                alert.direction.replaceFirstChar { it.uppercase() },
-                color = if (alert.direction == "sent") EmergencyRed else ActiveGreen,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    if (alert.direction == "sent") Icons.Rounded.Upload else Icons.Rounded.Download,
+                    null,
+                    tint = if (alert.direction == "sent") EmergencyRed else ActiveGreen,
+                    modifier = Modifier.size(11.dp)
+                )
+                Text(
+                    if (alert.direction == "sent") "Sent" else "Received",
+                    color = if (alert.direction == "sent") EmergencyRed else ActiveGreen,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
-        // Alert color indicator strip on right
+        // Color strip
         Box(
             modifier = Modifier
                 .width(3.dp)
                 .height(40.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(alert.color)
+                .background(color)
         )
     }
 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -106,6 +107,15 @@ fun PermissionScreen(onPermissionsGranted: () -> Unit) {
                 title = "Location",
                 description = "Required by Android for BLE scanning to function",
                 color = ActiveGreen
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            PermissionItem(
+                icon = Icons.Rounded.NotificationsActive,
+                title = "Notifications",
+                description = "Required to alert you when an emergency is detected nearby",
+                color = FireOrange
             )
 
             Spacer(Modifier.weight(1f))

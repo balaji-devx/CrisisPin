@@ -1,23 +1,41 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Permissions -->
+    <!-- ── Bluetooth ─────────────────────────────────────────────────────── -->
+    <!-- Legacy support for Android < 12 -->
     <uses-permission android:name="android.permission.BLUETOOTH"/>
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+
+    <!-- Android 12+ BLE permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="s" />
+        tools:targetApi="s"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
+    <!-- Location required for BLE scanning -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
+    <!-- ── Service ──────────────────────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+
+    <!-- ── Notifications ────────────────────────────────────────────────── -->
+    <!-- Android 13+ requires runtime permission request — handled in PermissionHelper -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- ── Vibration ────────────────────────────────────────────────────── -->
+    <!-- Declared here; no runtime grant needed — manifest is enough -->
     <uses-permission android:name="android.permission.VIBRATE"/>
 
-    <!-- BLE Required -->
-    <uses-feature
-        android:name="android.hardware.bluetooth_le"
-        android:required="true" />
+    <!-- ── Battery optimization ─────────────────────────────────────────── -->
+    <!-- Lets app ask user to whitelist it — keeps service alive on Xiaomi/MIUI -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+
+    <!-- BLE hardware required to install app -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 
     <application
         android:allowBackup="true"
@@ -39,6 +57,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!--
+            foregroundServiceType="connectedDevice" is required for Android 14+
+            when a foreground service uses Bluetooth.
+            Without this, startForegroundService() throws on API 34+.
+        -->
+        <service
+            android:name=".service.CrisisPinService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice"/>
 
     </application>
 </manifest>

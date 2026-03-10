@@ -9,6 +9,8 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.annotation.RequiresPermission
@@ -19,10 +21,14 @@ class BleScanner(
     private val onMessageReceived: (String) -> Unit
 ) {
     private val bluetoothAdapter: BluetoothAdapter =
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        (context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
     private val serviceUUID: UUID = UUID.fromString("0000abcd-0000-1000-8000-00805f9b34fb")
     private var isScanning = false
+
+    // FIX 1: Dispatch to main thread — onScanResult fires on BLE binder thread.
+    // Without this, mutableStateOf updates and LocalBroadcast sends race against the UI thread.
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Get scanner lazily — always fetched fresh so it's valid after BT toggles
     private val scanner: BluetoothLeScanner?
@@ -33,23 +39,19 @@ class BleScanner(
             val record = result.scanRecord ?: return
             val pUuid = ParcelUuid(serviceUUID)
 
-            // Log everything we see
-            Log.d("BLE", "=== Packet from: ${result.device.address} ===")
-            Log.d("BLE", "  ServiceUUIDs: ${record.serviceUuids}")
-            Log.d("BLE", "  ServiceData keys: ${record.serviceData.keys}")
-            Log.d("BLE", "  RSSI: ${result.rssi}")
-
-            // Try to read our specific data
             record.getServiceData(pUuid)?.let { data ->
-                val message = String(data)
-                Log.d("BLE", "  >>> OUR MESSAGE: $message")
-                onMessageReceived(message)
+                val message = String(data).trim()
+                if (message.isNotEmpty()) {
+                    Log.d("BLE", "Message received: '$message' from ${result.device.address}")
+                    // FIX 1: Always post to main thread before calling back
+                    mainHandler.post { onMessageReceived(message) }
+                }
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
             isScanning = false
-            Log.e("BLE", "Scan failed with error code: $errorCode")
+            Log.e("BLE", "Scan failed — error code: $errorCode")
         }
     }
 
@@ -63,20 +65,27 @@ class BleScanner(
             return
         }
 
+        // FIX 2: Use UUID filter — NOT null. Null scans every BLE device in range
+        // (headphones, watches, beacons) and fires the callback hundreds of times/second.
+        // The filter means only CrisisPin packets reach onScanResult.
+        val filter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(serviceUUID))
+            .build()
+
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY) // more aggressive scanning
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         try {
-            // NO filter — scan everything to debug
-            activeScanner.startScan(null, settings, scanCallback)
+            activeScanner.startScan(listOf(filter), settings, scanCallback)
             isScanning = true
-            Log.d("BLE", "Scanner started successfully")
+            Log.d("BLE", "Scanner started with UUID filter")
         } catch (e: Exception) {
             isScanning = false
             Log.e("BLE", "Scanner failed to start: ${e.message}")
         }
     }
+
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun stopScanning() {
         if (!isScanning) return

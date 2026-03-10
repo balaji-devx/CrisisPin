@@ -27,11 +27,15 @@ import kotlinx.coroutines.delay
 fun AlertSentScreen(alertType: String, onCancel: () -> Unit) {
     var countdown by remember { mutableIntStateOf(10) }
 
+    // FIX 11: Auto-cancel when countdown reaches 0 — previously advertising ran forever
+    // if the user navigated away or ignored the screen after sending.
     LaunchedEffect(Unit) {
         while (countdown > 0) {
             delay(1000)
             countdown--
         }
+        // Auto-stop advertising when timer expires
+        onCancel()
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "sent")
@@ -57,7 +61,6 @@ fun AlertSentScreen(alertType: String, onCancel: () -> Unit) {
             modifier = Modifier.padding(32.dp)
         ) {
 
-            // Animated check with rings
             Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
                 PulsingRing(EmergencyRed, 200.dp, 0)
                 PulsingRing(EmergencyRed, 200.dp, 500)
@@ -71,67 +74,39 @@ fun AlertSentScreen(alertType: String, onCancel: () -> Unit) {
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        Icons.Rounded.CheckCircle,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(64.dp)
+                        Icons.Rounded.CheckCircle, contentDescription = null,
+                        tint = Color.White, modifier = Modifier.size(64.dp)
                     )
                 }
             }
 
             Spacer(Modifier.height(40.dp))
 
-            Text(
-                "Alert Sent!",
-                color = Color.White,
-                fontSize = 36.sp,
-                fontWeight = FontWeight.Black
-            )
-
+            Text("Alert Sent!", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Black)
             Spacer(Modifier.height(8.dp))
-
-            Text(
-                "Emergency Broadcasted Successfully",
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
+            Text("Emergency Broadcasted Successfully",
+                color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-
-            Text(
-                "Nearby devices are being notified.",
-                color = TextSecondary,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center
-            )
+            Text("Nearby devices are being notified.",
+                color = TextSecondary, fontSize = 14.sp, textAlign = TextAlign.Center)
 
             Spacer(Modifier.height(16.dp))
 
-            // Alert type badge
             Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
+                modifier = Modifier.clip(RoundedCornerShape(20.dp))
                     .background(EmergencyRed.copy(0.2f))
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                Text(
-                    alertType.uppercase(),
-                    color = EmergencyRed,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 13.sp,
-                    letterSpacing = 2.sp
-                )
+                Text(alertType.uppercase(), color = EmergencyRed,
+                    fontWeight = FontWeight.Black, fontSize = 13.sp, letterSpacing = 2.sp)
             }
 
             Spacer(Modifier.height(60.dp))
 
-            // Cancel button with countdown
+            // Cancel button with live countdown — auto-fires at 0
             OutlinedButton(
                 onClick = onCancel,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                 border = ButtonDefaults.outlinedButtonBorder.copy(
@@ -139,9 +114,8 @@ fun AlertSentScreen(alertType: String, onCancel: () -> Unit) {
                 )
             ) {
                 Text(
-                    if (countdown > 0) "Cancel Alert ($countdown)" else "Cancel Alert",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
+                    if (countdown > 0) "Cancel Alert ($countdown)" else "Stopping…",
+                    fontWeight = FontWeight.Bold, fontSize = 16.sp
                 )
             }
         }
