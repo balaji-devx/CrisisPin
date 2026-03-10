@@ -48,6 +48,7 @@ fun AlertHistoryItem.formattedTime(): String {
 @Composable
 fun AlertHistoryScreen(
     alerts: List<AlertHistoryItem>,
+    title: String = "Alert History",   // "Received Alerts" or "Alert History"
     onBack: () -> Unit
 ) {
     var activeFilter by remember { mutableStateOf("All") }
@@ -80,7 +81,7 @@ fun AlertHistoryScreen(
             Spacer(Modifier.width(4.dp))
             Column {
                 Text(
-                    "Alert History",
+                    title,
                     color = Color.White,
                     fontWeight = FontWeight.Black,
                     fontSize = 20.sp

@@ -24,6 +24,7 @@ class CrisisPinService : Service() {
         const val NOTIF_SERVICE_ID   = 1
         const val NOTIF_ALERT_ID     = 2
 
+        // Broadcasts TO MainActivity
         const val ACTION_ALERT_RECEIVED      = "com.helios.crisispin.ALERT_RECEIVED"
         const val ACTION_BLE_STATE_CHANGED   = "com.helios.crisispin.BLE_STATE"
         const val ACTION_RELAY_STATE_CHANGED = "com.helios.crisispin.RELAY_STATE"
@@ -31,6 +32,7 @@ class CrisisPinService : Service() {
         const val EXTRA_BLE_ACTIVE   = "ble_active"
         const val EXTRA_RELAY_ACTIVE = "relay_active"
 
+        // Commands FROM MainActivity
         const val ACTION_START_ADVERTISING  = "com.helios.crisispin.START_ADV"
         const val ACTION_STOP_ADVERTISING   = "com.helios.crisispin.STOP_ADV"
         const val ACTION_START_RELAY        = "com.helios.crisispin.START_RELAY"
@@ -42,7 +44,15 @@ class CrisisPinService : Service() {
         const val ACTION_DISMISS_ALERT      = "com.helios.crisispin.DISMISS_ALERT"
         const val EXTRA_ALERT_TYPE          = "alert_type"
 
+        // ── COOLDOWN: how long to suppress duplicate BLE packets for same alert ──
+        // BLE scanner fires every 100-500ms for the same nearby advertiser.
+        // 8 seconds = 1 alert fires through, then 8s of silence.
+        // Short enough that a second DIFFERENT device can still trigger quickly.
+        // IMPORTANT: This only applies between packets — user can dismiss and
+        //            immediately receive the NEXT alert from a different device.
         const val ALERT_COOLDOWN_MS = 8_000L
+
+        // Mesh relay: separate 60s debounce to prevent relay loop (different from alert cooldown)
         const val RELAY_DEBOUNCE_MS = 60_000L
 
         fun startService(context: Context) {
@@ -63,12 +73,23 @@ class CrisisPinService : Service() {
     private var bleScanner: BleScanner? = null
     private var alertManager: AlertManager? = null
     private var isRelaying = false
+    private var soundEnabled = true
+    private var vibrationEnabled = true
 
     private lateinit var localBroadcast: LocalBroadcastManager
 
-    private val lastAlertFireTime = mutableMapOf<String, Long>()
-    private val lastRelayTime     = mutableMapOf<String, Long>()
-    private var alertIsActive = false
+    // ── BUG 1 FIX: SEPARATE maps for alerts vs relay ──────────────────────────
+    // Previously both used the same lastAlertTime map.
+    // Relay writes with 60s debounce, alert cooldown is 8s.
+    // If they share a map, acknowledging+relaying "MED" blocks next "MED" alert for 60s.
+    private val lastAlertFireTime  = mutableMapOf<String, Long>() // per-type alert cooldown
+    private val lastRelayTime      = mutableMapOf<String, Long>() // per-type relay debounce
+
+    // ── BUG 2 FIX: alertIsActive tracks whether UI is currently showing the alert ─
+    // Set to true when we broadcast to UI.
+    // Set to false when ACTION_DISMISS_ALERT received OR when service restarts.
+    // Previously this was never cleared on service restart → all alerts blocked forever.
+    private var alertIsActive = false  // starts FALSE — safe on restart
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -84,7 +105,7 @@ class CrisisPinService : Service() {
                     bleScanner?.stopScanning()
                     bleAdvertiser?.stopAdvertising()
                     isRelaying = false
-                    alertIsActive = false
+                    alertIsActive = false // clear on BT off — safe reset
                     localBroadcast.sendBroadcast(
                         Intent(ACTION_BLE_STATE_CHANGED).putExtra(EXTRA_BLE_ACTIVE, false)
                     )
@@ -98,21 +119,26 @@ class CrisisPinService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        alertIsActive = false
+        // alertIsActive = false by default — correct. Service restart is clean.
         localBroadcast = LocalBroadcastManager.getInstance(this)
         createNotificationChannels()
         startForeground(NOTIF_SERVICE_ID, buildSilentNotification())
 
         alertManager = AlertManager(this)
         bleAdvertiser = BleAdvertiser(this)
-        bleScanner = BleScanner(this) { message -> onAlertReceived(message) }
+        bleScanner = BleScanner(this) { message ->
+            onAlertReceived(message)
+        }
 
-        registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        registerReceiver(
+            bluetoothStateReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        )
 
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter.isEnabled) bleScanner?.startScanning()
 
-        Log.d("CrisisPinService", "Service created")
+        Log.d("CrisisPinService", "Service created — alertIsActive=$alertIsActive")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,21 +147,25 @@ class CrisisPinService : Service() {
                 val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "SOS"
                 bleAdvertiser?.startAdvertising(alertType)
             }
-            ACTION_STOP_ADVERTISING -> bleAdvertiser?.stopAdvertising()
+            ACTION_STOP_ADVERTISING -> {
+                bleAdvertiser?.stopAdvertising()
+            }
             ACTION_START_RELAY -> {
                 val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "SOS"
                 startMeshRelay(alertType)
             }
-            ACTION_STOP_RELAY -> stopMeshRelay()
+            ACTION_STOP_RELAY -> {
+                stopMeshRelay()
+            }
+            // ── BUG 2 FIX: Dismiss clears alertIsActive so next alert can show ──
             ACTION_DISMISS_ALERT -> {
                 alertIsActive = false
                 Log.d("CrisisPinService", "Alert dismissed — ready for next alert")
             }
-            // FIX 3: No more sound/vibration params in triggerAlert — service just flips the flag
-            ACTION_SOUND_ENABLED    -> alertManager?.setSoundEnabled(true)
-            ACTION_SOUND_DISABLED   -> alertManager?.setSoundEnabled(false)
-            ACTION_VIBRATION_ENABLED  -> alertManager?.setVibrationEnabled(true)
-            ACTION_VIBRATION_DISABLED -> alertManager?.setVibrationEnabled(false)
+            ACTION_SOUND_ENABLED    -> { soundEnabled = true;  alertManager?.setSoundEnabled(true)  }
+            ACTION_SOUND_DISABLED   -> { soundEnabled = false; alertManager?.setSoundEnabled(false) }
+            ACTION_VIBRATION_ENABLED  -> { vibrationEnabled = true;  alertManager?.setVibrationEnabled(true)  }
+            ACTION_VIBRATION_DISABLED -> { vibrationEnabled = false; alertManager?.setVibrationEnabled(false) }
         }
         return START_STICKY
     }
@@ -143,34 +173,44 @@ class CrisisPinService : Service() {
     private fun onAlertReceived(message: String) {
         val now = System.currentTimeMillis()
 
-        // Gate 1: time cooldown — kills BLE packet spam (fires every 100ms)
+        // ── GATE 1: Time cooldown — kills the BLE packet spam loop ──────────────
+        // BLE scanner fires every 100ms for same nearby advertiser.
+        // We only let one through per ALERT_COOLDOWN_MS window (8 seconds).
+        // Uses SEPARATE map from relay — relay does not reset alert cooldown.
         val lastFire = lastAlertFireTime[message] ?: 0L
-        if (now - lastFire < ALERT_COOLDOWN_MS) return
+        if (now - lastFire < ALERT_COOLDOWN_MS) {
+            return // silent drop — no log (would spam logcat every 100ms)
+        }
 
-        // FIX 8: Always record to history BEFORE the alertIsActive gate.
-        // Previously Gate 2 blocked history recording for subsequent packets.
-        lastAlertFireTime[message] = now
-        saveToHistory(message, "received")
-
-        // Gate 2: UI already showing an alert — don't navigate again
+        // ── GATE 2: Alert screen already open ───────────────────────────────────
+        // If UI is already showing an alert, don't fire another broadcast.
+        // This covers the case where the cooldown expired while user is still
+        // looking at a previous alert.
         if (alertIsActive) {
-            Log.d("CrisisPinService", "UI busy — history saved, skipping navigation")
+            Log.d("CrisisPinService", "Alert already active — skipping '$message'")
             return
         }
 
+        // Both gates passed — new alert
+        lastAlertFireTime[message] = now
         alertIsActive = true
-        Log.d("CrisisPinService", "✅ New alert: $message")
+        Log.d("CrisisPinService", "✅ New alert dispatched: $message")
 
+        // 1. Broadcast to UI (LocalBroadcastManager — guaranteed same-process delivery)
         localBroadcast.sendBroadcast(
             Intent(ACTION_ALERT_RECEIVED).putExtra(EXTRA_MESSAGE, message)
         )
+
+        // 2. Heads-up notification (only fires once per cooldown window)
         showAlertNotification(message)
-        // FIX 3: triggerAlert() with no params — reads internal flags
+
+        // 3. Vibrate + TTS
         alertManager?.triggerAlert(message)
     }
 
     private fun startMeshRelay(alertType: String) {
         val now = System.currentTimeMillis()
+        // Uses SEPARATE relay map — completely independent from alert cooldown
         val lastRelay = lastRelayTime[alertType] ?: 0L
         if (now - lastRelay < RELAY_DEBOUNCE_MS) {
             Log.d("CrisisPinService", "Relay debounced for '$alertType'")
@@ -198,39 +238,6 @@ class CrisisPinService : Service() {
         Log.d("CrisisPinService", "Mesh relay stopped")
     }
 
-    // FIX 8: Persist history in SharedPreferences so it survives app kill/restart.
-    // Service saves every alert; MainActivity loads on start and merges with in-memory list.
-    private fun saveToHistory(message: String, direction: String) {
-        val prefs = getSharedPreferences("crisispin_history", Context.MODE_PRIVATE)
-        val existing = prefs.getStringSet("history_ids", mutableSetOf())!!.toMutableSet()
-
-        val id = "${System.currentTimeMillis()}_${message}_$direction"
-        val label = when (message.uppercase()) {
-            "SOS" -> "SOS Emergency"; "MED" -> "Medical Alert"
-            "FIRE" -> "Fire Alert";   "PANIC" -> "Panic Alert"
-            "HELP" -> "General Help"; else -> "$message Alert"
-        }
-        val emoji = when (message.uppercase()) {
-            "MED" -> "🏥"; "FIRE" -> "🔥"; "PANIC" -> "⚠️"; "HELP" -> "🆘"; else -> "🚨"
-        }
-        val colorHex = when (message.uppercase()) {
-            "MED"   -> 0xFF1E88E5.toInt(); "FIRE"  -> 0xFFFF9800.toInt()
-            "PANIC" -> 0xFF9C27B0.toInt(); "HELP"  -> 0xFF43A047.toInt()
-            else    -> 0xFFE53935.toInt()
-        }
-        val ts = System.currentTimeMillis()
-
-        prefs.edit()
-            .putStringSet("history_ids", existing + id)
-            .putString("h_label_$id", label)
-            .putString("h_emoji_$id", emoji)
-            .putInt("h_color_$id", colorHex)
-            .putLong("h_ts_$id", ts)
-            .putString("h_dir_$id", direction)
-            .apply()
-        Log.d("CrisisPinService", "History saved: $direction $message")
-    }
-
     // ── Notifications ─────────────────────────────────────────────────────────
 
     private fun createNotificationChannels() {
@@ -240,7 +247,7 @@ class CrisisPinService : Service() {
                 .also { getSystemService(NotificationManager::class.java).createNotificationChannel(it) }
 
             NotificationChannel(CHANNEL_ALERT_ID, "Emergency Alerts", NotificationManager.IMPORTANCE_HIGH)
-                .apply { enableVibration(false); enableLights(true) } // AlertManager handles vib
+                .apply { enableVibration(true); enableLights(true) }
                 .also { getSystemService(NotificationManager::class.java).createNotificationChannel(it) }
         }
     }
@@ -249,8 +256,7 @@ class CrisisPinService : Service() {
         val pi = PendingIntent.getActivity(this, 0,
             packageManager.getLaunchIntentForPackage(packageName), PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CrisisPin")
-            .setContentText("Listening for emergency alerts")
+            .setContentTitle("CrisisPin").setContentText("Listening for emergency alerts")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentIntent(pi).setOngoing(true).setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_MIN).build()
@@ -267,8 +273,15 @@ class CrisisPinService : Service() {
     }
 
     private fun showAlertNotification(message: String) {
+        // FIX: Pass the alert message in the Intent so that tapping the notification
+        // opens IncomingAlert screen directly, whether app is cold-started or resumed.
+        // Requires android:launchMode="singleTop" on MainActivity in AndroidManifest.xml.
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            putExtra("show_alert_message", message)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
         val pi = PendingIntent.getActivity(this, NOTIF_ALERT_ID,
-            packageManager.getLaunchIntentForPackage(packageName),
+            launchIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val title = when (message.uppercase()) {
             "SOS"   -> "🚨 SOS Emergency Nearby!"
@@ -279,8 +292,7 @@ class CrisisPinService : Service() {
             else    -> "⚠️ Emergency: $message"
         }
         NotificationCompat.Builder(this, CHANNEL_ALERT_ID)
-            .setContentTitle(title)
-            .setContentText("Tap to open CrisisPin and respond")
+            .setContentTitle(title).setContentText("Tap to open CrisisPin and respond")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentIntent(pi).setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)

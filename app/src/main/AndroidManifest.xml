@@ -51,7 +51,9 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.CrisisPin">
+            android:theme="@style/Theme.CrisisPin"
+            android:launchMode="singleTop">
+            <!-- singleTop: notification tap calls onNewIntent() instead of creating a new instance -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
