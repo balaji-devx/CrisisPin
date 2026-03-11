@@ -11,114 +11,70 @@ import java.util.Locale
 
 class AlertManager(context: Context) {
 
-    // Always applicationContext — avoids leaks when constructed from a Service
-    private val appContext: Context = context.applicationContext
-
+    private val ctx = context.applicationContext
     private var tts: TextToSpeech? = null
-    private var isTtsReady = false
-
-    // FIX 3: Single source of truth for flags — no more redundant params in triggerAlert()
+    private var ttsReady = false
     private var soundEnabled = true
     private var vibrationEnabled = true
 
-    private val lastAlertTime = mutableMapOf<String, Long>()
-    private val cooldownMs = 5_000L
-
     init {
-        tts = TextToSpeech(appContext) { status ->
+        tts = TextToSpeech(ctx) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val result = tts?.setLanguage(Locale.US)
-                isTtsReady = result != TextToSpeech.LANG_MISSING_DATA &&
-                        result != TextToSpeech.LANG_NOT_SUPPORTED
-                Log.d("AlertManager", "TTS ready: $isTtsReady")
-            } else {
-                Log.e("AlertManager", "TTS init failed: $status")
+                val r = tts?.setLanguage(Locale.US)
+                ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED
+                Log.d("AlertManager", "TTS ready=$ttsReady")
             }
         }
     }
 
-    fun setSoundEnabled(enabled: Boolean) {
-        soundEnabled = enabled
-        if (!enabled) tts?.stop()
+    fun setSoundEnabled(e: Boolean)     { soundEnabled = e;     if (!e) tts?.stop() }
+    fun setVibrationEnabled(e: Boolean) { vibrationEnabled = e; if (!e) vibrator()?.cancel() }
+
+    fun triggerAlert(msg: String, playSound: Boolean = soundEnabled, doVibrate: Boolean = vibrationEnabled) {
+        Log.d("AlertManager", "triggerAlert msg=$msg sound=$playSound vib=$doVibrate")
+        if (doVibrate && vibrationEnabled) vibrate()
+        if (playSound && soundEnabled) speak(msg)
     }
 
-    fun setVibrationEnabled(enabled: Boolean) {
-        vibrationEnabled = enabled
-        if (!enabled) try { getVibrator()?.cancel() } catch (e: Exception) { }
-    }
-
-    // FIX 3: Removed redundant playSound/doVibrate params — internal flags are the source of truth
-    fun triggerAlert(message: String) {
-        val now = System.currentTimeMillis()
-        if (now - (lastAlertTime[message] ?: 0L) < cooldownMs) {
-            Log.d("AlertManager", "Backup cooldown: skipping '$message'")
-            return
-        }
-        lastAlertTime[message] = now
-        Log.d("AlertManager", "Triggering alert: $message (sound=$soundEnabled vib=$vibrationEnabled)")
-
-        if (vibrationEnabled) vibrate()
-        if (soundEnabled) speak(message)
-    }
-
-    private fun getVibrator(): Vibrator? = try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            appContext.getSystemService(VibratorManager::class.java)?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            appContext.getSystemService(Vibrator::class.java)
-        }
-    } catch (e: Exception) {
-        Log.e("AlertManager", "getVibrator failed: ${e.message}")
-        null
-    }
+    private fun vibrator(): Vibrator? = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            ctx.getSystemService(VibratorManager::class.java)?.defaultVibrator
+        else
+            @Suppress("DEPRECATION") ctx.getSystemService(Vibrator::class.java)
+    } catch (e: Exception) { null }
 
     private fun vibrate() {
-        val vibrator = getVibrator()
-        if (vibrator == null || !vibrator.hasVibrator()) {
-            Log.e("AlertManager", "Vibrator unavailable")
-            return
-        }
+        val v = vibrator()
+        if (v == null || !v.hasVibrator()) { Log.e("AlertManager", "No vibrator"); return }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // Arrays must be same length — mismatch causes silent failure
-                val timings    = longArrayOf(0, 400, 200, 400, 200, 400)
-                val amplitudes = intArrayOf(  0, 255,   0, 255,   0, 255)
-                val effect = if (vibrator.hasAmplitudeControl()) {
-                    VibrationEffect.createWaveform(timings, amplitudes, -1)
+                if (v.hasAmplitudeControl()) {
+                    v.vibrate(VibrationEffect.createWaveform(
+                        longArrayOf(0, 400, 150, 400, 150, 400),
+                        intArrayOf(  0, 255,   0, 255,   0, 255), -1))
                 } else {
-                    // Xiaomi chips without amplitude control — simple oneshot always works
-                    VibrationEffect.createOneShot(600, VibrationEffect.DEFAULT_AMPLITUDE)
+                    v.vibrate(VibrationEffect.createOneShot(800, VibrationEffect.DEFAULT_AMPLITUDE))
                 }
-                vibrator.vibrate(effect)
-                Log.d("AlertManager", "Vibration triggered")
             } else {
                 @Suppress("DEPRECATION")
-                vibrator.vibrate(longArrayOf(0, 400, 200, 400, 200, 400), -1)
+                v.vibrate(longArrayOf(0, 400, 150, 400, 150, 400), -1)
             }
-        } catch (e: SecurityException) {
-            Log.e("AlertManager", "VIBRATE permission missing from manifest!")
-        } catch (e: Exception) {
-            Log.e("AlertManager", "Vibration exception: ${e.message}")
-        }
+            Log.d("AlertManager", "Vibrated ✓")
+        } catch (e: Exception) { Log.e("AlertManager", "Vibrate failed: ${e.message}") }
     }
 
-    private fun speak(message: String) {
-        if (!isTtsReady) { Log.e("AlertManager", "TTS not ready"); return }
-        val text = when (message.uppercase().trim()) {
-            "SOS"   -> "Emergency! S O S alert received. Someone nearby needs help!"
-            "FIRE"  -> "Warning! Fire alert received. There is a fire nearby!"
-            "MED"   -> "Medical emergency! Someone nearby needs medical attention!"
+    private fun speak(msg: String) {
+        if (!ttsReady) { Log.e("AlertManager", "TTS not ready"); return }
+        val text = when (msg.uppercase()) {
+            "SOS"   -> "Emergency! Someone nearby needs immediate help!"
+            "MED"   -> "Medical emergency nearby! Someone needs medical attention!"
+            "FIRE"  -> "Fire alert! There is a fire nearby!"
             "PANIC" -> "Alert! Someone nearby is in danger!"
-            "HELP"  -> "Attention! Someone nearby needs assistance!"
+            "HELP"  -> "Someone nearby needs assistance!"
             else    -> "Emergency alert received."
         }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "crisispin_alert")
-        Log.d("AlertManager", "TTS speaking: $text")
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cp_alert")
     }
 
-    fun release() {
-        try { tts?.stop(); tts?.shutdown() } catch (e: Exception) { }
-        tts = null
-    }
+    fun release() { try { tts?.stop(); tts?.shutdown() } catch (e: Exception) { }; tts = null }
 }

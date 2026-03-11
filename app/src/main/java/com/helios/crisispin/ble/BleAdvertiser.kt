@@ -1,6 +1,5 @@
 package com.helios.crisispin.ble
 
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -15,39 +14,57 @@ import java.util.UUID
 
 class BleAdvertiser(context: Context) {
 
-    private val bluetoothAdapter: BluetoothAdapter =
+    private val bluetoothAdapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
-    // Replace your UUID with a 16-bit one
-    // Must be identical in BOTH files
-    private val serviceUUID: UUID = UUID.fromString("0000abcd-0000-1000-8000-00805f9b34fb")
+    private val serviceUUID: UUID = UUID.fromString(BleScanner.SERVICE_UUID_STRING)
     private var currentCallback: AdvertiseCallback? = null
     private var retryCount = 0
     private val maxRetries = 3
+    private val handler = Handler(Looper.getMainLooper())
 
-    // Get advertiser lazily — always fetched fresh so it's valid after BT toggles
+    // ── MIUI 10s cap fix ──────────────────────────────────────────────────────
+    // Xiaomi/MIUI hardware enforces ~10s advertising timeout ignoring setTimeout(0).
+    // Keep-alive runnable restarts advertising every 8s to maintain continuous broadcast.
+    // User sees "30 second alert" but it's actually sustained indefinitely until stopped.
+    private val KEEP_ALIVE_MS = 8_000L
+    private var currentMessage: String? = null
+    private var isAdvertisingIntentional = false
+
+    private val keepAliveRunnable = Runnable {
+        val msg = currentMessage
+        if (isAdvertisingIntentional && msg != null) {
+            Log.d("BleAdvertiser", "Keep-alive: restarting '$msg'")
+            executeStart(msg)
+            scheduleKeepAlive()
+        }
+    }
+
+    private fun scheduleKeepAlive() {
+        handler.removeCallbacks(keepAliveRunnable)
+        handler.postDelayed(keepAliveRunnable, KEEP_ALIVE_MS)
+    }
+
     private val advertiser: BluetoothLeAdvertiser?
         get() = bluetoothAdapter.bluetoothLeAdvertiser
 
-    fun startAdvertising(message: String = "ALERT") {
+    fun startAdvertising(message: String = "SOS") {
         retryCount = 0
-        stopAdvertising()
-        // Short delay to let the BT stack clear any previous slot
-        Handler(Looper.getMainLooper()).postDelayed({
-            executeStart(message)
-        }, 1000)
+        currentMessage = message
+        isAdvertisingIntentional = true
+        stopCurrentCallback()
+        handler.postDelayed({ executeStart(message) }, 500)
     }
 
     private fun executeStart(message: String) {
-        val activeAdvertiser = advertiser
-        if (activeAdvertiser == null) {
-            Log.e("BLE", "Advertiser unavailable — Bluetooth may be off or device unsupported")
+        val active = advertiser ?: run {
+            Log.e("BleAdvertiser", "Advertiser null — BT off?")
             return
         }
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY) // change from LOW_POWER
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)     // add this
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(false)
             .setTimeout(0)
             .build()
@@ -56,57 +73,47 @@ class BleAdvertiser(context: Context) {
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-            .addServiceUuid(pUuid)       // PUT THIS BACK
-            .addServiceData(pUuid, message.toByteArray())
+            .addServiceUuid(pUuid)
+            .addServiceData(pUuid, message.toByteArray(Charsets.UTF_8))
             .build()
 
         val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
                 retryCount = 0
-                Log.d("BLE", "Advertising started successfully")
+                Log.d("BleAdvertiser", "Advertising '$message' ✓")
             }
-
             override fun onStartFailure(errorCode: Int) {
-                Log.e("BLE", "Advertising failed with error code: $errorCode")
-                // Error code 1 = ADVERTISE_FAILED_ALREADY_STARTED or hardware busy
-                if (errorCode == ADVERTISE_FAILED_ALREADY_STARTED ||
-                    errorCode == ADVERTISE_FAILED_TOO_MANY_ADVERTISERS
-                ) {
-                    if (retryCount < maxRetries) {
-                        retryCount++
-                        Log.d("BLE", "Retrying advertising (attempt $retryCount of $maxRetries)...")
-                        // Stop this specific callback before retrying
-                        try { activeAdvertiser.stopAdvertising(this) } catch (e: Exception) { /* ignore */ }
-                        Handler(Looper.getMainLooper()).postDelayed({ executeStart(message) }, 2500)
-                    } else {
-                        Log.e("BLE", "Max retries reached. Could not start advertising.")
-                        retryCount = 0
-                    }
-                }
+                Log.e("BleAdvertiser", "Advertise FAILED errorCode=$errorCode")
+                if (retryCount < maxRetries && isAdvertisingIntentional) {
+                    retryCount++
+                    try { active.stopAdvertising(this) } catch (e: Exception) { }
+                    handler.postDelayed({ executeStart(message) }, 2000)
+                } else { retryCount = 0 }
             }
         }
 
+        stopCurrentCallback()
         currentCallback = callback
-
         try {
-            activeAdvertiser.startAdvertising(settings, data, callback)
+            active.startAdvertising(settings, data, callback)
         } catch (e: Exception) {
-            Log.e("BLE", "Hardware exception during startAdvertising: ${e.message}")
+            Log.e("BleAdvertiser", "startAdvertising exception: ${e.message}")
         }
+    }
+
+    private fun stopCurrentCallback() {
+        currentCallback?.let { try { advertiser?.stopAdvertising(it) } catch (e: Exception) { } }
+        currentCallback = null
     }
 
     fun stopAdvertising() {
-        val cb = currentCallback ?: return
-        try {
-            advertiser?.stopAdvertising(cb)
-            Log.d("BLE", "Advertising stopped")
-        } catch (e: Exception) {
-            Log.e("BLE", "Error stopping advertiser: ${e.message}")
-        } finally {
-            currentCallback = null
-            retryCount = 0
-        }
+        isAdvertisingIntentional = false
+        currentMessage = null
+        handler.removeCallbacks(keepAliveRunnable)
+        stopCurrentCallback()
+        retryCount = 0
+        Log.d("BleAdvertiser", "Stopped")
     }
 
-    fun isAdvertising(): Boolean = currentCallback != null
+    fun isAdvertising() = isAdvertisingIntentional
 }

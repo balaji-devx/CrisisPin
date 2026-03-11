@@ -29,6 +29,7 @@ fun SettingsScreen(
     onAlertSoundToggle: (Boolean) -> Unit,
     onVibrationToggle: (Boolean) -> Unit,
     onBluetoothToggle: (Boolean) -> Unit,
+    onLogout: () -> Unit = {},
     onBack: () -> Unit
 ) {
     Column(
@@ -130,7 +131,7 @@ fun SettingsScreen(
                     iconColor = FireOrange,
                     title = "Background Mesh Relay",
                     subtitle = "Extend alert range via device relay",
-                    badge = "Coming Soon"
+                    badge = null
                 )
             }
 
@@ -191,6 +192,28 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            Spacer(Modifier.height(24.dp))
+
+            Button(
+                onClick = onLogout,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed.copy(0.15f))
+            ) {
+                Icon(Icons.Rounded.Logout, null,
+                    tint = EmergencyRed, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Sign Out",
+                    color = EmergencyRed,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(Modifier.height(32.dp))
 
             Spacer(Modifier.height(40.dp))
         }
@@ -267,7 +290,7 @@ fun SettingsInfoRow(
     iconColor: Color,
     title: String,
     subtitle: String,
-    badge: String
+    badge: String? = null
 ) {
     Row(
         modifier = Modifier
@@ -289,13 +312,17 @@ fun SettingsInfoRow(
             Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             Text(subtitle, color = TextSecondary, fontSize = 11.sp)
         }
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(OffGray.copy(0.25f))
-                .padding(horizontal = 8.dp, vertical = 3.dp)
-        ) {
-            Text(badge, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        if (badge != null) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(OffGray.copy(0.25f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(badge, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
         }
+
+
     }
 }

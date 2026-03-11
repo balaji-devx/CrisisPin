@@ -1,7 +1,6 @@
 package com.helios.crisispin.ble
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -18,19 +17,27 @@ import java.util.UUID
 
 class BleScanner(
     context: Context,
-    private val onMessageReceived: (String) -> Unit
+    private val onMessageReceived: (message: String, deviceAddress: String) -> Unit
 ) {
-    private val bluetoothAdapter: BluetoothAdapter =
-        (context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val bluetoothAdapter =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
-    private val serviceUUID: UUID = UUID.fromString("0000abcd-0000-1000-8000-00805f9b34fb")
+    companion object {
+        const val SERVICE_UUID_STRING = "0000ABCD-0000-1000-8000-00805F9B34FB"
+    }
+
+    private val serviceUUID: UUID = UUID.fromString(SERVICE_UUID_STRING)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var isScanning = false
 
-    // FIX 1: Dispatch to main thread — onScanResult fires on BLE binder thread.
-    // Without this, mutableStateOf updates and LocalBroadcast sends race against the UI thread.
-    private val mainHandler = Handler(Looper.getMainLooper())
+    // Filter own advertisements — set when we start advertising/relaying
+    private val selfAdvertisingMessages = mutableSetOf<String>()
 
-    // Get scanner lazily — always fetched fresh so it's valid after BT toggles
+    fun setSelfAdvertising(message: String?) {
+        selfAdvertisingMessages.clear()
+        if (message != null) selfAdvertisingMessages.add(message.uppercase())
+    }
+
     private val scanner: BluetoothLeScanner?
         get() = bluetoothAdapter.bluetoothLeScanner
 
@@ -38,66 +45,51 @@ class BleScanner(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val record = result.scanRecord ?: return
             val pUuid = ParcelUuid(serviceUUID)
+            val data = record.getServiceData(pUuid)
+            if (data == null || data.isEmpty()) return
 
-            record.getServiceData(pUuid)?.let { data ->
-                val message = String(data).trim()
-                if (message.isNotEmpty()) {
-                    Log.d("BLE", "Message received: '$message' from ${result.device.address}")
-                    // FIX 1: Always post to main thread before calling back
-                    mainHandler.post { onMessageReceived(message) }
-                }
-            }
+            val message = String(data, Charsets.UTF_8).trim()
+            if (message.isBlank()) return
+
+            if (message.uppercase() in selfAdvertisingMessages) return
+
+            val deviceAddress = result.device.address
+            Log.d("BleScanner", "RX '$message' from $deviceAddress RSSI=${result.rssi}")
+            // Pass device address so service can count unique devices
+            mainHandler.post { onMessageReceived(message, deviceAddress) }
         }
 
         override fun onScanFailed(errorCode: Int) {
             isScanning = false
-            Log.e("BLE", "Scan failed — error code: $errorCode")
+            Log.e("BleScanner", "Scan FAILED errorCode=$errorCode")
         }
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun startScanning() {
         if (isScanning) return
+        val active = scanner ?: run { Log.e("BleScanner", "Scanner null"); return }
 
-        val activeScanner = scanner
-        if (activeScanner == null) {
-            Log.e("BLE", "Scanner unavailable — Bluetooth may be off")
-            return
-        }
-
-        // FIX 2: Use UUID filter — NOT null. Null scans every BLE device in range
-        // (headphones, watches, beacons) and fires the callback hundreds of times/second.
-        // The filter means only CrisisPin packets reach onScanResult.
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(serviceUUID))
-            .build()
-
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUUID)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
         try {
-            activeScanner.startScan(listOf(filter), settings, scanCallback)
+            active.startScan(listOf(filter), settings, scanCallback)
             isScanning = true
-            Log.d("BLE", "Scanner started with UUID filter")
+            Log.d("BleScanner", "Scanning started ✓")
         } catch (e: Exception) {
             isScanning = false
-            Log.e("BLE", "Scanner failed to start: ${e.message}")
+            Log.e("BleScanner", "startScan failed: ${e.message}")
         }
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun stopScanning() {
         if (!isScanning) return
-        try {
-            scanner?.stopScan(scanCallback)
-            Log.d("BLE", "Scanner stopped")
-        } catch (e: Exception) {
-            Log.e("BLE", "Error stopping scanner: ${e.message}")
-        } finally {
-            isScanning = false
-        }
+        try { scanner?.stopScan(scanCallback) } catch (e: Exception) { }
+        finally { isScanning = false }
+        Log.d("BleScanner", "Scanning stopped")
     }
 
-    fun isActive(): Boolean = isScanning
+    fun isActive() = isScanning
 }

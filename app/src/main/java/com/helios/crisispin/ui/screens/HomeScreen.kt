@@ -51,7 +51,8 @@ fun HomeScreen(
     onSendAlert: (String) -> Unit,
     onStopAlert: () -> Unit,
     onStopRelay: () -> Unit,
-    onNavigate: (String) -> Unit
+    onNavigate: (String) -> Unit,
+    userRole: String
 ) {
     var selectedAlertType by remember { mutableStateOf(alertTypes[0]) }
 
