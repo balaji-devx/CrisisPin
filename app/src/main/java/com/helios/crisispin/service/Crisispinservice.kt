@@ -1,5 +1,6 @@
 package com.helios.crisispin.service
 
+import android.Manifest
 import android.app.*
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -10,6 +11,7 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.helios.crisispin.ble.BleAdvertiser
@@ -28,10 +30,14 @@ class CrisisPinService : Service() {
         const val ACTION_ALERT_RECEIVED      = "com.helios.crisispin.ALERT_RECEIVED"
         const val ACTION_BLE_STATE_CHANGED   = "com.helios.crisispin.BLE_STATE"
         const val ACTION_RELAY_STATE_CHANGED = "com.helios.crisispin.RELAY_STATE"
+        const val ACTION_ALERT_BLOCKED       = "com.helios.crisispin.ALERT_BLOCKED"
         const val EXTRA_MESSAGE      = "message"
         const val EXTRA_MSG_ENCODED  = "msg_encoded"
         const val EXTRA_BLE_ACTIVE   = "ble_active"
         const val EXTRA_RELAY_ACTIVE = "relay_active"
+        const val EXTRA_BLOCKED_TYPE = "blocked_type"
+        const val EXTRA_UNBLOCK_TIME = "unblock_time"
+        const val EXTRA_DEVICE_COUNT = "device_count"
 
         const val ACTION_START_ADVERTISING  = "com.helios.crisispin.START_ADV"
         const val ACTION_STOP_ADVERTISING   = "com.helios.crisispin.STOP_ADV"
@@ -39,9 +45,10 @@ class CrisisPinService : Service() {
         const val ACTION_STOP_RELAY         = "com.helios.crisispin.STOP_RELAY"
         const val ACTION_SOUND_ENABLED      = "com.helios.crisispin.SOUND_ON"
         const val ACTION_SOUND_DISABLED     = "com.helios.crisispin.SOUND_OFF"
-        const val ACTION_VIBRATION_ENABLED  = "com.helios.crisispin.VIB_ON"
-        const val ACTION_VIBRATION_DISABLED = "com.helios.crisispin.VIB_OFF"
+        const val ACTION_VIB_ENABLED  = "com.helios.crisispin.VIB_ON"
+        const val ACTION_VIB_DISABLED = "com.helios.crisispin.VIB_OFF"
         const val ACTION_DISMISS_ALERT      = "com.helios.crisispin.DISMISS_ALERT"
+        const val ACTION_SYNC_STATE        = "com.helios.crisispin.SYNC_STATE"
         const val EXTRA_ALERT_TYPE          = "alert_type"
 
         const val ALERT_COOLDOWN_MS = 8_000L
@@ -70,6 +77,7 @@ class CrisisPinService : Service() {
     private var lastReceivedMsg: CrisisMessage? = null
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                 BluetoothAdapter.STATE_ON -> {
@@ -87,6 +95,7 @@ class CrisisPinService : Service() {
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     override fun onCreate() {
         super.onCreate()
         alertIsActive = false
@@ -117,8 +126,8 @@ class CrisisPinService : Service() {
             ACTION_DISMISS_ALERT -> { alertIsActive = false }
             ACTION_SOUND_ENABLED    -> alertManager?.setSoundEnabled(true)
             ACTION_SOUND_DISABLED   -> alertManager?.setSoundEnabled(false)
-            ACTION_VIBRATION_ENABLED  -> alertManager?.setVibrationEnabled(true)
-            ACTION_VIBRATION_DISABLED -> alertManager?.setVibrationEnabled(false)
+            ACTION_VIB_ENABLED  -> alertManager?.setVibrationEnabled(true)
+            ACTION_VIB_DISABLED -> alertManager?.setVibrationEnabled(false)
         }
         return START_STICKY
     }
@@ -240,6 +249,7 @@ class CrisisPinService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     override fun onDestroy() {
         super.onDestroy()
         bleAdvertiser?.stopAdvertising()

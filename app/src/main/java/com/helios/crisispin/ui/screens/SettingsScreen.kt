@@ -29,7 +29,6 @@ fun SettingsScreen(
     onAlertSoundToggle: (Boolean) -> Unit,
     onVibrationToggle: (Boolean) -> Unit,
     onBluetoothToggle: (Boolean) -> Unit,
-    onLogout: () -> Unit = {},
     onBack: () -> Unit
 ) {
     Column(
@@ -193,28 +192,6 @@ fun SettingsScreen(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-
-            Button(
-                onClick = onLogout,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed.copy(0.15f))
-            ) {
-                Icon(Icons.Rounded.Logout, null,
-                    tint = EmergencyRed, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Sign Out",
-                    color = EmergencyRed,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(Modifier.height(32.dp))
-
             Spacer(Modifier.height(40.dp))
         }
     }
@@ -323,6 +300,6 @@ fun SettingsInfoRow(
             }
         }
 
-
+        Spacer(Modifier.height(32.dp))
     }
 }
