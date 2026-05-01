@@ -1,6 +1,7 @@
 package com.helios.crisispin.service
 
 import android.app.*
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
@@ -8,15 +9,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.helios.crisispin.ble.BleAdvertiser
 import com.helios.crisispin.ble.BleScanner
-import com.helios.crisispin.utils.AlertManager
-import com.helios.crisispin.utils.CrisisMessage
+import com.helios.crisispin.utils.*
 
+/**
+ * Core background service for CrisisPin.
+ * Manages BLE scanning, mesh relaying, and trust-aware alert processing.
+ */
 class CrisisPinService : Service() {
 
     companion object {
@@ -28,10 +35,14 @@ class CrisisPinService : Service() {
         const val ACTION_ALERT_RECEIVED      = "com.helios.crisispin.ALERT_RECEIVED"
         const val ACTION_BLE_STATE_CHANGED   = "com.helios.crisispin.BLE_STATE"
         const val ACTION_RELAY_STATE_CHANGED = "com.helios.crisispin.RELAY_STATE"
+        const val ACTION_SCORE_UPDATED       = "com.helios.crisispin.SCORE_UPDATED"
+        
         const val EXTRA_MESSAGE      = "message"
+        const val EXTRA_MSG_ID       = "msg_id"
         const val EXTRA_MSG_ENCODED  = "msg_encoded"
         const val EXTRA_BLE_ACTIVE   = "ble_active"
         const val EXTRA_RELAY_ACTIVE = "relay_active"
+        const val EXTRA_SCORE        = "score"
 
         const val ACTION_START_ADVERTISING  = "com.helios.crisispin.START_ADV"
         const val ACTION_STOP_ADVERTISING   = "com.helios.crisispin.STOP_ADV"
@@ -46,11 +57,16 @@ class CrisisPinService : Service() {
 
         const val ALERT_COOLDOWN_MS = 8_000L
         const val RELAY_DEBOUNCE_MS = 60_000L
+        const val MAX_MAP_SIZE = 500
+        const val SCORE_UPDATE_THROTTLE_MS = 300L
 
+        /**
+         * Safely starts the service as a foreground service on Android 8+.
+         */
         fun startService(context: Context) {
             val intent = Intent(context, CrisisPinService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                context.startForegroundService(intent)
+                ContextCompat.startForegroundService(context, intent)
             else context.startService(intent)
         }
 
@@ -64,20 +80,42 @@ class CrisisPinService : Service() {
     private var isRelaying = false
     private lateinit var localBroadcast: LocalBroadcastManager
 
-    private val lastAlertFireTime = mutableMapOf<String, Long>() // keyed by msgId
-    private val lastRelayTime     = mutableMapOf<String, Long>() // keyed by alertType
+    // Trust/Confidence tracking
+    private val ackSetByMsgId = mutableMapOf<String, MutableSet<String>>()
+    private val firstSeenTime = mutableMapOf<String, Long>()
+    private val duplicateAckCount = mutableMapOf<String, Int>()
+    private val lastAckTimePerDevice = mutableMapOf<String, Long>() // originId -> timestamp
+    
+    // FIX 4: Throttle confidence score updates
+    private val lastScoreUpdate = mutableMapOf<String, Long>()
+
+    private val lastAlertFireTime = mutableMapOf<String, Long>()
+    private val lastRelayTime     = mutableMapOf<String, Long>()
     private var alertIsActive = false
-    private var lastReceivedMsg: CrisisMessage? = null
+    
+    // ERROR 1 FIX: Use an anonymous object to correctly override removeEldestEntry at class level
+    private val recentAlerts = object : java.util.LinkedHashMap<String, CrisisMessage>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CrisisMessage>?): Boolean {
+            return size > 16  // Keep max 16 recent alerts
+        }
+    }
+
+    // Score update throttling
+    private val scoreHandler = Handler(Looper.getMainLooper())
+    private val pendingScoreUpdates = mutableSetOf<String>()
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                 BluetoothAdapter.STATE_ON -> {
-                    bleScanner?.startScanning()
+                    // FIX 1: Prevent duplicate scanning start
+                    if (!(bleScanner?.isScanning() ?: false)) {
+                        safeStartScanning()
+                    }
                     localBroadcast.sendBroadcast(Intent(ACTION_BLE_STATE_CHANGED).putExtra(EXTRA_BLE_ACTIVE, true))
                 }
                 BluetoothAdapter.STATE_OFF -> {
-                    bleScanner?.stopScanning()
+                    safeStopScanning()
                     bleAdvertiser?.stopAdvertising()
                     isRelaying = false; alertIsActive = false
                     localBroadcast.sendBroadcast(Intent(ACTION_BLE_STATE_CHANGED).putExtra(EXTRA_BLE_ACTIVE, false))
@@ -89,19 +127,47 @@ class CrisisPinService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        alertIsActive = false
-        localBroadcast = LocalBroadcastManager.getInstance(this)
+        // STEP 3C: Foreground Notification immediately in onCreate
         createNotificationChannels()
         startForeground(NOTIF_SERVICE_ID, buildSilentNotification())
+
+        alertIsActive = false
+        localBroadcast = LocalBroadcastManager.getInstance(this)
         alertManager  = AlertManager(this)
         bleAdvertiser = BleAdvertiser(this)
         bleScanner    = BleScanner(this) { msg -> onAlertReceived(msg) }
         registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        
+        // STEP 3B: Guarantee scan start in onCreate
+        // FIX 1: Prevent duplicate scanning start
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        if (adapter.isEnabled) bleScanner?.startScanning()
+        if (adapter.isEnabled && !(bleScanner?.isScanning() ?: false)) {
+            safeStartScanning()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun safeStartScanning() {
+        if (!PermissionHelper.hasPermissions(this)) {
+            Log.e("CrisisPinService", "Scanning aborted: Missing permissions")
+            return
+        }
+        try { bleScanner?.startScanning() } catch (se: SecurityException) { }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun safeStopScanning() {
+        try { bleScanner?.stopScanning() } catch (se: SecurityException) { }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // STEP 3B: Guarantee scan start in onStartCommand (background reliability)
+        // FIX 1: Prevent duplicate scanning start
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        if (adapter.isEnabled && !(bleScanner?.isScanning() ?: false)) {
+            safeStartScanning()
+        }
+
         when (intent?.action) {
             ACTION_START_ADVERTISING -> {
                 val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: "SOS"
@@ -109,9 +175,22 @@ class CrisisPinService : Service() {
             }
             ACTION_STOP_ADVERTISING -> bleAdvertiser?.stopAdvertising()
             ACTION_START_RELAY -> {
-                val encoded = intent.getStringExtra(EXTRA_MSG_ENCODED)
-                val msg = (if (encoded != null) CrisisMessage.decode(encoded) else null) ?: lastReceivedMsg
-                if (msg != null) startMeshRelay(msg)
+                // Prefer encoded message from intent (passed from UI with alert context)
+                val encodedMsg = intent?.getStringExtra(CrisisPinService.EXTRA_MSG_ENCODED)
+                val msg = if (encodedMsg != null) {
+                    CrisisMessage.decodeFromBle(encodedMsg.toByteArray(Charsets.UTF_8))
+                } else {
+                    // Fallback: try to use most recent alert
+                    recentAlerts.values.lastOrNull()
+                }
+                if (msg != null) {
+                    // FIX 2: Prevent self-acknowledgement
+                    val deviceId = DeviceIdentity.getDeviceId(this)
+                    if (msg.originId != deviceId) {
+                        val ackMsg = CrisisMessage.createAck(msg, deviceId)
+                        startMeshRelay(ackMsg)
+                    }
+                }
             }
             ACTION_STOP_RELAY -> stopMeshRelay()
             ACTION_DISMISS_ALERT -> { alertIsActive = false }
@@ -125,37 +204,112 @@ class CrisisPinService : Service() {
 
     private fun onAlertReceived(msg: CrisisMessage) {
         val now = System.currentTimeMillis()
+        
+        // Trust Engine: Handle ACKs
+        if ((msg.flags and CrisisMessage.FLAG_ACK) != 0) {
+            handleAck(msg)
+            return
+        }
+
         val lastFire = lastAlertFireTime[msg.msgId] ?: 0L
         if (now - lastFire < ALERT_COOLDOWN_MS) return
 
         lastAlertFireTime[msg.msgId] = now
-        lastReceivedMsg = msg
-        saveToHistory(msg.type, "received")
+        capMapByOldest(lastAlertFireTime)
+        
+        if (!firstSeenTime.containsKey(msg.msgId)) {
+            firstSeenTime[msg.msgId] = now
+            capMapByOldest(firstSeenTime)
+        }
+        
+        // Add to recent alerts queue (handles simultaneous alerts gracefully)
+        recentAlerts[msg.msgId] = msg
+        HistoryPrefs.save(this, msg.type, "received", msg.msgId)
 
         if (alertIsActive) {
-            Log.d("CrisisPinService", "UI busy — history saved for ${msg.msgId}")
+            throttleScoreUpdate(msg)
             return
         }
         alertIsActive = true
-        Log.d("CrisisPinService", "Dispatching: ${msg.type} from ${msg.originId}")
+        Log.d("CrisisPinService", "Dispatching alert: ${msg.type} from ${msg.originId}")
 
         localBroadcast.sendBroadcast(
             Intent(ACTION_ALERT_RECEIVED)
                 .putExtra(EXTRA_MESSAGE, msg.type)
-                .putExtra(EXTRA_MSG_ENCODED, CrisisMessage.encode(msg))
+                .putExtra(EXTRA_MSG_ID, msg.msgId)
+                .putExtra(EXTRA_MSG_ENCODED, msg.msgId) 
         )
         showAlertNotification(msg.type)
         alertManager?.triggerAlert(msg.type)
+        throttleScoreUpdate(msg)
+    }
+
+    private fun handleAck(msg: CrisisMessage) {
+        val now = System.currentTimeMillis()
+        val originalSeen = firstSeenTime[msg.msgId]
+        
+        // 1. Ignore ACKs arriving too fast (<1s after original) to prevent burst spoofing
+        if (originalSeen != null && now - originalSeen < 1000L) return
+
+        // 2. Rate limit: ignore ACK if same device sends within 5 seconds
+        val lastDeviceAck = lastAckTimePerDevice[msg.originId]
+        if (lastDeviceAck != null && now - lastDeviceAck < 5000L) return
+        lastAckTimePerDevice[msg.originId] = now
+        capMapByOldest(lastAckTimePerDevice)
+
+        val acks = ackSetByMsgId.getOrPut(msg.msgId) { mutableSetOf() }
+        if (msg.originId in acks) {
+            // Suspicious: same device sending ACK multiple times for same message
+            duplicateAckCount[msg.msgId] = (duplicateAckCount[msg.msgId] ?: 0) + 1
+            capMapByOldest(duplicateAckCount)
+        } else {
+            acks.add(msg.originId)
+        }
+        capMapByOldest(ackSetByMsgId)
+        
+        // Use recentAlerts lookup instead of any global single-message reference
+        recentAlerts[msg.msgId]?.let { throttleScoreUpdate(it) }
+    }
+
+    private fun throttleScoreUpdate(msg: CrisisMessage) {
+        if (pendingScoreUpdates.contains(msg.msgId)) return
+        
+        // FIX 4: Throttle confidence score updates
+        val now = System.currentTimeMillis()
+        val last = lastScoreUpdate[msg.msgId] ?: 0L
+        if (now - last > 300) {
+            lastScoreUpdate[msg.msgId] = now
+            pendingScoreUpdates.add(msg.msgId)
+            scoreHandler.postDelayed({
+                pendingScoreUpdates.remove(msg.msgId)
+                updateConfidence(msg)
+            }, SCORE_UPDATE_THROTTLE_MS)
+        }
+    }
+
+    private fun updateConfidence(msg: CrisisMessage) {
+        val acks = ackSetByMsgId[msg.msgId]?.size ?: 0
+        val dups = duplicateAckCount[msg.msgId] ?: 0
+        val seen = bleScanner?.getNearbyCount() ?: 0
+        val startTime = firstSeenTime[msg.msgId] ?: System.currentTimeMillis()
+        
+        val score = ConfidenceEngine.computeScore(acks, seen, msg.hop, startTime, dups)
+        
+        localBroadcast.sendBroadcast(
+            Intent(ACTION_SCORE_UPDATED)
+                .putExtra(EXTRA_MSG_ID, msg.msgId)
+                .putExtra(EXTRA_SCORE, score)
+        )
     }
 
     private fun startMeshRelay(msg: CrisisMessage) {
         val now = System.currentTimeMillis()
         if (now - (lastRelayTime[msg.type] ?: 0L) < RELAY_DEBOUNCE_MS) return
         lastRelayTime[msg.type] = now
+        capMapByOldest(lastRelayTime)
         isRelaying = true
         bleAdvertiser?.startRelaying(msg)
         localBroadcast.sendBroadcast(Intent(ACTION_RELAY_STATE_CHANGED).putExtra(EXTRA_RELAY_ACTIVE, true))
-        updateServiceNotification("Relaying ${msg.type} — tap Stop to end")
     }
 
     private fun stopMeshRelay() {
@@ -166,23 +320,13 @@ class CrisisPinService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIF_SERVICE_ID, buildSilentNotification())
     }
 
-    private fun saveToHistory(alertType: String, direction: String) {
-        val p = getSharedPreferences("crisispin_history", Context.MODE_PRIVATE)
-        val ids = p.getStringSet("history_ids", mutableSetOf())!!.toMutableSet()
-        val id  = "${System.currentTimeMillis()}_${alertType}_$direction"
-        val label = when (alertType.uppercase()) {
-            "SOS"->"SOS Emergency";"MED"->"Medical Alert";"FIRE"->"Fire Alert"
-            "PANIC"->"Panic Alert";"HELP"->"General Help";else->"$alertType Alert"
-        }
-        val emoji    = when (alertType.uppercase()) { "MED"->"🏥";"FIRE"->"🔥";"PANIC"->"⚠️";"HELP"->"🆘";else->"🚨" }
-        val colorHex = when (alertType.uppercase()) {
-            "MED"->0xFF1E88E5.toInt();"FIRE"->0xFFFF9800.toInt()
-            "PANIC"->0xFF9C27B0.toInt();"HELP"->0xFF43A047.toInt();else->0xFFE53935.toInt()
-        }
-        p.edit().putStringSet("history_ids", ids + id)
-            .putString("h_label_$id", label).putString("h_emoji_$id", emoji)
-            .putInt("h_color_$id", colorHex).putLong("h_ts_$id", System.currentTimeMillis())
-            .putString("h_dir_$id", direction).apply()
+    /**
+     * Step 7: Memory safety helper. Prevents unbounded growth of tracking maps.
+     */
+    private fun <K, V> capMapByOldest(map: MutableMap<K, V>, maxSize: Int = MAX_MAP_SIZE) {
+        if (map.size <= maxSize) return
+        val it = map.keys.iterator()
+        if (it.hasNext()) { it.next(); it.remove() }
     }
 
     private fun createNotificationChannels() {
@@ -200,20 +344,12 @@ class CrisisPinService : Service() {
         val pi = PendingIntent.getActivity(this, 0,
             packageManager.getLaunchIntentForPackage(packageName), PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CrisisPin").setContentText("Listening for emergency alerts")
+            .setContentTitle("CrisisPin")
+            // FIX 5: Improve foreground notification text
+            .setContentText("CrisisPin is actively scanning nearby alerts")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentIntent(pi).setOngoing(true).setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_MIN).build()
-    }
-
-    private fun updateServiceNotification(text: String) {
-        val pi = PendingIntent.getActivity(this, 0,
-            packageManager.getLaunchIntentForPackage(packageName), PendingIntent.FLAG_IMMUTABLE)
-        NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CrisisPin Active").setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentIntent(pi).setOngoing(true).setSilent(true).build()
-            .also { getSystemService(NotificationManager::class.java).notify(NOTIF_SERVICE_ID, it) }
     }
 
     private fun showAlertNotification(alertType: String) {
@@ -243,7 +379,7 @@ class CrisisPinService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         bleAdvertiser?.stopAdvertising()
-        bleScanner?.stopScanning()
+        safeStopScanning()
         alertManager?.release()
         try { unregisterReceiver(bluetoothStateReceiver) } catch (e: Exception) { }
     }

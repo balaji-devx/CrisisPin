@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "164616297335",
+    "project_id": "crisispin",
+    "storage_bucket": "crisispin.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:164616297335:android:7094bb9f084d5dd8c29f72",
+        "android_client_info": {
+          "package_name": "com.helios.crisispin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDk1yNxK5cuY9FcnsIThojvNkDTk-CwPUo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
