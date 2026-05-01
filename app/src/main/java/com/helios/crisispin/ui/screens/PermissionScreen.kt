@@ -27,6 +27,7 @@ import com.helios.crisispin.ui.theme.*
 
 @Composable
 fun PermissionScreen(onPermissionsGranted: () -> Unit) {
+    var requested by remember { mutableStateOf(false) }
     val infiniteTransition = rememberInfiniteTransition(label = "perm")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f, targetValue = 1.08f,
@@ -143,10 +144,15 @@ fun PermissionScreen(onPermissionsGranted: () -> Unit) {
             }
 
             Button(
-                onClick = onPermissionsGranted,
+                onClick = {
+                    if (requested) return@Button
+                    requested = true
+                    onPermissionsGranted()
+                },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed)
+                colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed),
+                enabled = !requested
             ) {
                 Icon(Icons.Rounded.Bluetooth, null, Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))

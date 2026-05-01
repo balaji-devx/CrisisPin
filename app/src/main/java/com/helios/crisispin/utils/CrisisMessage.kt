@@ -1,83 +1,153 @@
 package com.helios.crisispin.utils
 
+import android.util.Log
+import java.nio.ByteBuffer
+
 /**
- * Wire protocol for CrisisPin BLE payloads.
- *
- * Format (pipe-delimited to avoid conflicts with base36 IDs):
- *   TYPE|ORIGIN_ID|MSG_ID|HOP|VISITED
- *
- * Fields:
- *   TYPE       — alert type string: SOS, MED, FIRE, PANIC, HELP
- *   ORIGIN_ID  — 6-char base36 ID of the device that ORIGINATED the alert (never changes on relay)
- *   MSG_ID     — 6-char base36 random ID unique to this send session
- *   HOP        — integer relay hop count. Starts at 0, incremented each relay. Max = MAX_HOPS.
- *   VISITED    — comma-separated list of device IDs that have seen this exact message.
- *                Prevents the same device from receiving or relaying the same packet twice.
- *
- * Example (fresh send from device "ab1234"):
- *   MED|ab1234|xy9012|0|ab1234
- *
- * Example (after relay by device "cd5678"):
- *   MED|ab1234|xy9012|1|ab1234,cd5678
- *
- * Max payload estimate:
- *   "PANIC|ab1234|xy9012|3|ab1234,cd5678,ef9012,gh3456" = 50 chars
- *   BLE ServiceData max = 20 bytes after UUID overhead — we cap VISITED at 4 IDs.
- *   At 6 chars + comma = 7 bytes each, 4 IDs = 28 chars. Full packet ~ 44 chars. ✓
+ * Hardened Wire protocol for CrisisPin BLE payloads.
+ * Supports legacy V1 (String) and compact V2 (Binary).
  */
 data class CrisisMessage(
-    val type: String,        // e.g. "MED"
-    val originId: String,    // 6-char base36 device ID of originator
-    val msgId: String,       // 6-char base36 random session ID
-    val hop: Int,            // relay hop count
-    val visited: Set<String> // device IDs that have processed this message
+    val type: String,
+    val originId: String,
+    val msgId: String,
+    val hop: Int,
+    val visited: Set<String>,
+    val flags: Int = 0
 ) {
     companion object {
-        const val MAX_HOPS    = 3     // prevent infinite relay loops
-        const val MAX_VISITED = 6     // keep payload small
+        const val MAX_HOPS = 10
+        const val BLE_MAX_BYTES = 20
+        
+        const val V2_VER = 0x02.toByte()
+        const val FLAG_ACK = 0x01
+        const val FLAG_CANCEL = 0x02 // FIX 3: Cancel flag added
 
-        fun encode(msg: CrisisMessage): String {
-            val visitedStr = msg.visited.take(MAX_VISITED).joinToString(",")
-            return "${msg.type}|${msg.originId}|${msg.msgId}|${msg.hop}|$visitedStr"
+        /** Unified decoder with version detection */
+        fun decodeFromBle(bytes: ByteArray): CrisisMessage? {
+            // FIX 3 — STRICT V2 HEADER VALIDATION
+            if (bytes.size >= 3 &&
+                bytes[0] == 'C'.code.toByte() &&
+                bytes[1] == 'P'.code.toByte() &&
+                bytes[2] == 0x02.toByte()
+            ) {
+                return decodeV2(bytes)
+            } else {
+                return decode(String(bytes, Charsets.UTF_8))
+            }
         }
+
+        private fun decodeV2(bytes: ByteArray): CrisisMessage? {
+            return try {
+                val buffer = ByteBuffer.wrap(bytes)
+                if (buffer.remaining() < 14) return null 
+                buffer.position(3) // Skip header
+
+                val typeCode = buffer.get().toInt()
+                val type = when(typeCode) {
+                    1 -> "SOS"; 2 -> "MED"; 3 -> "FIRE"; 4 -> "PANIC"; 5 -> "HELP"; else -> "SOS"
+                }
+                
+                val originId = buffer.getInt().toUInt().toLong().toString(36).padStart(6, '0')
+                val msgId = buffer.getInt().toUInt().toLong().toString(36).padStart(6, '0')
+                
+                val hop = buffer.get().toInt() and 0xFF
+                val flags = buffer.get().toInt() and 0xFF
+
+                val visited = mutableSetOf(originId)
+                while (buffer.remaining() >= 4 && visited.size < 2) {
+                    val vId = buffer.getInt().toUInt().toLong().toString(36).padStart(6, '0')
+                    if (vId.length == 6) visited.add(vId)
+                }
+
+                CrisisMessage(type, originId, msgId, hop.coerceIn(0, MAX_HOPS), visited, flags)
+            } catch (e: Exception) {
+                Log.e("CrisisMessage", "V2 decode error", e)
+                null
+            }
+        }
+
+        private val TYPE_MAP = mapOf("SOS" to 1, "MED" to 2, "FIRE" to 3, "PANIC" to 4, "HELP" to 5)
 
         fun decode(raw: String): CrisisMessage? {
             return try {
                 val parts = raw.split("|")
                 if (parts.size < 4) return null
-                val type     = parts[0].uppercase().trim()
+                val type = parts[0].uppercase().trim()
+                if (!TYPE_MAP.containsKey(type)) return null
+                
                 val originId = parts[1].trim()
-                val msgId    = parts[2].trim()
-                val hop      = parts[3].trim().toIntOrNull() ?: 0
-                val visited  = if (parts.size >= 5 && parts[4].isNotBlank())
-                    parts[4].split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-                else
-                    setOf(originId)
-                if (type.isEmpty() || originId.isEmpty() || msgId.isEmpty()) null
-                else CrisisMessage(type, originId, msgId, hop, visited)
+                val msgId = parts[2].trim()
+                if (originId.length > 6 || msgId.length > 6) return null
+                
+                val hop = parts[3].trim().toIntOrNull() ?: 0
+                val visited = if (parts.size >= 5 && parts[4].isNotBlank())
+                    parts[4].split(",").map { it.trim() }.filter { it.length <= 6 }.toSet()
+                else setOf(originId)
+
+                CrisisMessage(type, originId, msgId, hop.coerceIn(0, MAX_HOPS), visited)
+            } catch (e: Exception) { null }
+        }
+
+        /** Safe V2 Encoder (Strictly <= 20 bytes) */
+        fun encodeForBle(msg: CrisisMessage): ByteArray? {
+            try {
+                val buffer = ByteBuffer.allocate(BLE_MAX_BYTES)
+                buffer.put('C'.code.toByte())
+                buffer.put('P'.code.toByte())
+                buffer.put(V2_VER)
+                
+                buffer.put(TYPE_MAP[msg.type.uppercase()]?.toByte() ?: 1)
+                
+                val originLong = msg.originId.take(6).toLong(36) and 0xFFFFFFFFL
+                val msgIdLong = msg.msgId.take(6).toLong(36) and 0xFFFFFFFFL
+                
+                buffer.putInt(originLong.toInt())
+                buffer.putInt(msgIdLong.toInt())
+                buffer.put(msg.hop.coerceIn(0, MAX_HOPS).toByte())
+                buffer.put(msg.flags.toByte())
+
+                msg.visited.filter { it != msg.originId }.take(1).forEach { id ->
+                    val vidLong = id.take(6).toLong(36) and 0xFFFFFFFFL
+                    buffer.putInt(vidLong.toInt())
+                }
+                
+                val result = ByteArray(buffer.position())
+                buffer.flip()
+                buffer.get(result)
+                return result
             } catch (e: Exception) {
-                null
+                Log.e("CrisisMessage", "V2 encode failed, trying V1 fallback", e)
+                val v1 = encodeV1(msg)
+                val v1Bytes = v1.toByteArray(Charsets.UTF_8)
+                return if (v1Bytes.size <= BLE_MAX_BYTES) v1Bytes else null
             }
         }
 
-        /** Create a fresh message for sending */
+        private fun encodeV1(msg: CrisisMessage): String {
+            // Minimal V1 for fallback - max 1 visited
+            val visitedStr = msg.visited.filter { it != msg.originId }.take(1).joinToString(",")
+            val base = "${msg.type}|${msg.originId}|${msg.msgId}|${msg.hop}"
+            return if (visitedStr.isNotEmpty()) "$base|$visitedStr" else base
+        }
+
         fun newAlert(type: String, myDeviceId: String): CrisisMessage {
-            val msgId = (Math.abs(java.util.UUID.randomUUID().toString()
-                .replace("-", "").take(8).toLong(16)) % 2_176_782_336L).toString(36).padStart(6, '0')
-            return CrisisMessage(
-                type     = type.uppercase(),
-                originId = myDeviceId,
-                msgId    = msgId,
-                hop      = 0,
-                visited  = setOf(myDeviceId)
+            val msgId = (System.currentTimeMillis() % 2_176_782_336L).toString(36).padStart(6, '0')
+            return CrisisMessage(type.uppercase(), myDeviceId, msgId, 0, setOf(myDeviceId))
+        }
+
+        fun createAck(msg: CrisisMessage, myDeviceId: String): CrisisMessage {
+            return msg.copy(
+                flags = msg.flags or FLAG_ACK,
+                visited = setOf(myDeviceId)
             )
         }
 
-        /** Create a relay copy with this device added to visited and hop incremented */
-        fun relay(msg: CrisisMessage, myDeviceId: String): CrisisMessage {
+        // FIX 3: Create Cancel message
+        fun createCancel(msg: CrisisMessage, myDeviceId: String): CrisisMessage {
             return msg.copy(
-                hop     = msg.hop + 1,
-                visited = (msg.visited + myDeviceId).take(MAX_VISITED).toSet()
+                flags = msg.flags or FLAG_CANCEL,
+                visited = setOf(myDeviceId)
             )
         }
     }

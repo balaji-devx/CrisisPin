@@ -49,13 +49,15 @@ fun AlertHistoryItem.formattedTime(): String {
 fun AlertHistoryScreen(
     alerts: List<AlertHistoryItem>,
     title: String = "Alert History",   // "Received Alerts" or "Alert History"
+    showFilters: Boolean = true,       // FIX 5 & 6
     onBack: () -> Unit
 ) {
     var activeFilter by remember { mutableStateOf("All") }
 
-    val filteredAlerts = when (activeFilter) {
-        "Received" -> alerts.filter { it.direction == "received" }
-        "Sent" -> alerts.filter { it.direction == "sent" }
+    val filteredAlerts = when {
+        !showFilters -> alerts // If filters hidden, show what's passed (usually already filtered)
+        activeFilter == "Received" -> alerts.filter { it.direction == "received" }
+        activeFilter == "Sent" -> alerts.filter { it.direction == "sent" }
         else -> alerts
     }
 
@@ -86,41 +88,50 @@ fun AlertHistoryScreen(
                     fontWeight = FontWeight.Black,
                     fontSize = 20.sp
                 )
-                Text(
-                    "${alerts.size} total • ${alerts.count { it.direction == "sent" }} sent · ${alerts.count { it.direction == "received" }} received",
-                    color = TextSecondary,
-                    fontSize = 11.sp
-                )
+                if (showFilters) {
+                    Text(
+                        "${alerts.size} total • ${alerts.count { it.direction == "sent" }} sent · ${alerts.count { it.direction == "received" }} received",
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                } else {
+                    Text(
+                        "${alerts.size} alerts found",
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
         // Filter chips — functional, filter list in real time
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf("All", "Received", "Sent").forEach { filter ->
-                val isSelected = activeFilter == filter
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(if (isSelected) EmergencyRed else SurfaceCard)
-                        .clickable { activeFilter = filter }
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        filter,
-                        color = if (isSelected) Color.White else TextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+        if (showFilters) {
+            Row(
+                modifier = Modifier.padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("All", "Received", "Sent").forEach { filter ->
+                    val isSelected = activeFilter == filter
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(if (isSelected) EmergencyRed else SurfaceCard)
+                            .clickable { activeFilter = filter }
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            filter,
+                            color = if (isSelected) Color.White else TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
+            Spacer(Modifier.height(16.dp))
         }
-
-        Spacer(Modifier.height(16.dp))
 
         if (filteredAlerts.isEmpty()) {
             // Empty state

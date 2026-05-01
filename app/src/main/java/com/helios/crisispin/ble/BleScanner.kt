@@ -9,11 +9,13 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.annotation.RequiresPermission
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.helios.crisispin.utils.CrisisMessage
 import com.helios.crisispin.utils.DeviceIdentity
 import java.util.UUID
@@ -23,52 +25,69 @@ class BleScanner(
     private val onMessageReceived: (CrisisMessage) -> Unit
 ) {
     private val appContext = context.applicationContext
-    private val bluetoothAdapter: BluetoothAdapter =
-        (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val bluetoothAdapter: BluetoothAdapter? =
+        (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
     private val serviceUUID: UUID = UUID.fromString("0000abcd-0000-1000-8000-00805f9b34fb")
     private var isScanning = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val scanner: BluetoothLeScanner?
-        get() = bluetoothAdapter.bluetoothLeScanner
+        get() = bluetoothAdapter?.bluetoothLeScanner
 
-    // Seen message IDs → first-seen timestamp. Deduplicates multi-hop arrivals.
+    // Hardened limits for scalability
     private val seenMsgIds = mutableMapOf<String, Long>()
+    private val seenCancelIds = mutableMapOf<String, Long>()
+    private val seenDevices = mutableMapOf<String, Long>() // originId -> timestamp
+    
     private val MSG_TTL_MS = 5 * 60 * 1000L
+    private val CANCEL_TTL_MS = 60 * 1000L
+    private val DEVICE_TTL_MS = 30 * 1000L
+    private val MAX_TRACKED_ITEMS = 500
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val record    = result.scanRecord ?: return
-            val pUuid     = ParcelUuid(serviceUUID)
-            val rawBytes  = record.getServiceData(pUuid) ?: return
-            val raw       = String(rawBytes, Charsets.UTF_8).trim()
-            if (raw.isEmpty()) return
+            val record = result.scanRecord ?: return
+            val pUuid = ParcelUuid(serviceUUID)
+            val rawBytes = record.getServiceData(pUuid) ?: return
+            if (rawBytes.isEmpty()) return
 
-            val msg = CrisisMessage.decode(raw)
-            if (msg == null) {
-                Log.w("BLE", "Undecodable packet: '$raw'")
-                return
-            }
-
+            // Hardened decode with V1/V2 support
+            val msg = CrisisMessage.decodeFromBle(rawBytes) ?: return
             val myId = DeviceIdentity.getDeviceId(appContext)
 
-            // GATE 1: Own message — sender never receives its own alert
+            // FIX 4: Prevent origin device from processing its own message (Loopback protection)
             if (msg.originId == myId) return
 
-            // GATE 2: This device is already in the visited set — already processed this exact message
-            if (myId in msg.visited) return
+            // Track nearby devices based on originId
+            trackDevice(msg.originId)
 
+            if (myId in msg.visited) return
+            
             // GATE 3: Max hops — mesh propagation ceiling
             if (msg.hop >= CrisisMessage.MAX_HOPS) return
 
-            // GATE 4: Already seen this msgId recently (multi-hop dedup)
             val now = System.currentTimeMillis()
-            cleanOldMsgIds(now)
-            if (seenMsgIds.containsKey(msg.msgId)) return
-            seenMsgIds[msg.msgId] = now
+            cleanOldData(now)
+            
+            // Always process CANCEL messages even if we've seen the msgId before
+            val isCancel = (msg.flags and CrisisMessage.FLAG_CANCEL) != 0
 
-            Log.d("BLE", "✅ Alert: ${msg.type} origin=${msg.originId} hop=${msg.hop} msg=${msg.msgId}")
+            if (isCancel) {
+                val lastCancel = seenCancelIds[msg.msgId]
+                if (lastCancel != null && now - lastCancel <= CANCEL_TTL_MS) return
+                if (seenCancelIds.size < MAX_TRACKED_ITEMS) {
+                    seenCancelIds[msg.msgId] = now
+                }
+            }
+            
+            if (!isCancel && seenMsgIds.containsKey(msg.msgId)) return
+            
+            if (seenMsgIds.size < MAX_TRACKED_ITEMS) {
+                seenMsgIds[msg.msgId] = now
+            }
+
+            Log.d("BLE", "✅ Alert: ${msg.type} origin=${msg.originId} hop=${msg.hop} cancel=$isCancel")
             mainHandler.post { onMessageReceived(msg) }
         }
 
@@ -78,8 +97,30 @@ class BleScanner(
         }
     }
 
-    private fun cleanOldMsgIds(now: Long) {
-        seenMsgIds.entries.filter { now - it.value > MSG_TTL_MS }.forEach { seenMsgIds.remove(it.key) }
+    private fun trackDevice(originId: String) {
+        val now = System.currentTimeMillis()
+        val isNew = !seenDevices.containsKey(originId)
+        if (seenDevices.size < MAX_TRACKED_ITEMS) {
+            seenDevices[originId] = now
+        }
+        
+        if (isNew || (now % 5000 < 500)) { // Throttled broadcast
+            broadcastMetrics()
+        }
+    }
+
+    private fun broadcastMetrics() {
+        val now = System.currentTimeMillis()
+        cleanOldData(now)
+        val intent = Intent("com.helios.crisispin.METRICS_UPDATED")
+        intent.putExtra("nearby_count", seenDevices.size)
+        LocalBroadcastManager.getInstance(appContext).sendBroadcast(intent)
+    }
+
+    private fun cleanOldData(now: Long) {
+        seenMsgIds.entries.removeIf { now - it.value > MSG_TTL_MS }
+        seenCancelIds.entries.removeIf { now - it.value > CANCEL_TTL_MS }
+        seenDevices.entries.removeIf { now - it.value > DEVICE_TTL_MS }
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -93,7 +134,7 @@ class BleScanner(
         try {
             activeScanner.startScan(listOf(filter), settings, scanCallback)
             isScanning = true
-            Log.d("BLE", "Scanner started (myId=${DeviceIdentity.getDeviceId(appContext)})")
+            Log.d("BLE", "Scanner started")
         } catch (e: Exception) {
             isScanning = false
             Log.e("BLE", "Scanner failed: ${e.message}")
@@ -108,4 +149,10 @@ class BleScanner(
     }
 
     fun isActive(): Boolean = isScanning
+    fun isScanning(): Boolean = isScanning
+
+    fun getNearbyCount(): Int {
+        cleanOldData(System.currentTimeMillis())
+        return seenDevices.size
+    }
 }
