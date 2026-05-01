@@ -2,6 +2,8 @@ package com.helios.crisispin.utils
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -16,6 +18,9 @@ class AlertManager(context: Context) {
     private var ttsReady = false
     private var soundEnabled = true
     private var vibrationEnabled = true
+    
+    private val handler = Handler(Looper.getMainLooper())
+    private val stopVibrationRunnable = Runnable { stopVibration() }
 
     init {
         tts = TextToSpeech(ctx) { status ->
@@ -28,12 +33,17 @@ class AlertManager(context: Context) {
     }
 
     fun setSoundEnabled(e: Boolean)     { soundEnabled = e;     if (!e) tts?.stop() }
-    fun setVibrationEnabled(e: Boolean) { vibrationEnabled = e; if (!e) vibrator()?.cancel() }
+    fun setVibrationEnabled(e: Boolean) { vibrationEnabled = e; if (!e) stopVibration() }
 
     fun triggerAlert(msg: String, playSound: Boolean = soundEnabled, doVibrate: Boolean = vibrationEnabled) {
         Log.d("AlertManager", "triggerAlert msg=$msg sound=$playSound vib=$doVibrate")
-        if (doVibrate && vibrationEnabled) vibrate()
+        if (doVibrate && vibrationEnabled) startVibration()
         if (playSound && soundEnabled) speak(msg)
+    }
+
+    fun stopAlert() {
+        stopVibration()
+        tts?.stop()
     }
 
     private fun vibrator(): Vibrator? = try {
@@ -43,24 +53,31 @@ class AlertManager(context: Context) {
             @Suppress("DEPRECATION") ctx.getSystemService(Vibrator::class.java)
     } catch (e: Exception) { null }
 
-    private fun vibrate() {
+    private fun startVibration() {
         val v = vibrator()
         if (v == null || !v.hasVibrator()) { Log.e("AlertManager", "No vibrator"); return }
         try {
+            // FIX 2: Implement repeating vibration pattern
+            val pattern = longArrayOf(0, 500, 500)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (v.hasAmplitudeControl()) {
-                    v.vibrate(VibrationEffect.createWaveform(
-                        longArrayOf(0, 400, 150, 400, 150, 400),
-                        intArrayOf(  0, 255,   0, 255,   0, 255), -1))
-                } else {
-                    v.vibrate(VibrationEffect.createOneShot(800, VibrationEffect.DEFAULT_AMPLITUDE))
-                }
+                // repeat = 0 means start at index 0 and loop
+                v.vibrate(VibrationEffect.createWaveform(pattern, 0))
             } else {
                 @Suppress("DEPRECATION")
-                v.vibrate(longArrayOf(0, 400, 150, 400, 150, 400), -1)
+                v.vibrate(pattern, 0)
             }
-            Log.d("AlertManager", "Vibrated ✓")
+            
+            // FIX 5: Vibration safety (battery + UX). Fallback stop after 45s.
+            handler.removeCallbacks(stopVibrationRunnable)
+            handler.postDelayed(stopVibrationRunnable, 45000)
+            
+            Log.d("AlertManager", "Repeating vibration started")
         } catch (e: Exception) { Log.e("AlertManager", "Vibrate failed: ${e.message}") }
+    }
+
+    fun stopVibration() {
+        handler.removeCallbacks(stopVibrationRunnable)
+        vibrator()?.cancel()
     }
 
     private fun speak(msg: String) {
@@ -76,5 +93,5 @@ class AlertManager(context: Context) {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cp_alert")
     }
 
-    fun release() { try { tts?.stop(); tts?.shutdown() } catch (e: Exception) { }; tts = null }
+    fun release() { try { stopAlert(); tts?.shutdown() } catch (e: Exception) { }; tts = null }
 }

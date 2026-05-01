@@ -61,7 +61,6 @@ object HistoryPrefs {
         val p = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val ids = p.getStringSet(KEY_IDS, mutableSetOf())!!.toMutableSet()
 
-        // Use msgId to prevent duplicate entries for the same alert event
         val entryId = if (msgId != null) "msg_$msgId" else "${System.currentTimeMillis()}_${alertType}_$direction"
         
         if (ids.contains(entryId)) return entryId
@@ -79,6 +78,18 @@ object HistoryPrefs {
             .apply()
 
         return entryId
+    }
+
+    /**
+     * FIX 7: Mark an existing history entry as cancelled.
+     */
+    fun markCancelled(context: Context, msgId: String) {
+        val p = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val entryId = "msg_$msgId"
+        val label = p.getString("h_label_$entryId", null) ?: return
+        if (!label.contains("(Cancelled)")) {
+            p.edit().putString("h_label_$entryId", "$label (Cancelled)").apply()
+        }
     }
 
     fun load(context: Context): List<HistoryRecord> {
@@ -105,7 +116,7 @@ object HistoryPrefs {
 }
 
 class NearbyDeviceTracker(
-    private val ttlMs: Long = 30 * 1000L, // TTL window reduced to 30s as per requirement
+    private val ttlMs: Long = 30 * 1000L, 
     private val maxTracked: Int = 256
 ) {
     private val lastSeenMs = java.util.LinkedHashMap<String, Long>()
@@ -113,7 +124,7 @@ class NearbyDeviceTracker(
     @Synchronized
     fun markSeen(deviceId: String, nowMs: Long = System.currentTimeMillis()): Int {
         cleanup(nowMs)
-        lastSeenMs.remove(deviceId) // Move to end
+        lastSeenMs.remove(deviceId) 
         lastSeenMs[deviceId] = nowMs
         if (lastSeenMs.size > maxTracked) {
             val it = lastSeenMs.entries.iterator()

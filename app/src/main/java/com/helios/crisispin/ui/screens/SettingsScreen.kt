@@ -1,6 +1,9 @@
 package com.helios.crisispin.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,6 +37,8 @@ fun SettingsScreen(
     onBluetoothToggle: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -43,7 +49,7 @@ fun SettingsScreen(
         Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
         Spacer(Modifier.height(8.dp))
 
-        // Header — back button on LEFT
+        // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -67,7 +73,6 @@ fun SettingsScreen(
             // ── Bluetooth ─────────────────────────────────────────────
             SectionLabel("Bluetooth")
             SettingsCard {
-                // Real BT toggle — calls enableBtLauncher or adapter.disable()
                 SettingsToggleRow(
                     icon = Icons.Rounded.Bluetooth,
                     iconColor = if (bleActive) ActiveGreen else OffGray,
@@ -83,7 +88,6 @@ fun SettingsScreen(
             // ── Alerts ────────────────────────────────────────────────
             SectionLabel("Alert Notifications")
             SettingsCard {
-                // Real sound toggle — passed to AlertManager.setSoundEnabled()
                 SettingsToggleRow(
                     icon = Icons.AutoMirrored.Rounded.VolumeUp,
                     iconColor = Color(0xFF1E88E5),
@@ -97,7 +101,6 @@ fun SettingsScreen(
                     thickness = 0.5.dp,
                     modifier = Modifier.padding(start = 56.dp)
                 )
-                // Real vibration toggle — passed to AlertManager.setVibrationEnabled()
                 SettingsToggleRow(
                     icon = Icons.Rounded.Vibration,
                     iconColor = PanicPurple,
@@ -111,29 +114,30 @@ fun SettingsScreen(
             Spacer(Modifier.height(20.dp))
 
             // ── Advanced ──────────────────────────────────────────────
+            // FIX 8 & 9: Simplified Advanced Section
             SectionLabel("Advanced")
             SettingsCard {
-                var authorityMode by remember { mutableStateOf(false) }
-                SettingsToggleRow(
-                    icon = Icons.Rounded.Shield,
-                    iconColor = EmergencyRed,
-                    title = "Authority Mode",
-                    subtitle = "Mark this device as security personnel",
-                    checked = authorityMode,
-                    onCheckedChange = { authorityMode = it }
-                )
-                HorizontalDivider(
-                    color = Divider,
-                    thickness = 0.5.dp,
-                    modifier = Modifier.padding(start = 56.dp)
-                )
-                SettingsInfoRow(
-                    icon = Icons.Rounded.Hub,
-                    iconColor = FireOrange,
-                    title = "Background Mesh Relay",
-                    subtitle = "Extend alert range via device relay",
-                    badge = null
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(OffGray.copy(0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Rounded.Shield, null, tint = OffGray, modifier = Modifier.size(20.dp))
+                    }
+                    Column {
+                        Text("Authority Mode", color = TextMuted, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text("Coming Soon", color = TextMuted, fontSize = 11.sp)
+                    }
+                }
             }
 
             Spacer(Modifier.height(20.dp))
@@ -157,12 +161,17 @@ fun SettingsScreen(
             Spacer(Modifier.height(20.dp))
 
             // ── About ─────────────────────────────────────────────────
+            // FIX 10: Improved About Section
             SectionLabel("About")
             SettingsCard {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://crisispin.netlify.app"))
+                            context.startActivity(intent)
+                        }
+                        .padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -170,7 +179,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .background(EmergencyRed),
+                            .background(EmergencyRed.copy(0.15f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("📍", fontSize = 24.sp)
@@ -182,20 +191,17 @@ fun SettingsScreen(
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
                         )
-                        Text("Version 1.0.0 · Helios", color = TextSecondary, fontSize = 12.sp)
+                        Text("Version 1.0.0", color = TextSecondary, fontSize = 12.sp)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Internet-free emergency communication using BLE. Works anywhere, no network required.",
-                            color = TextSecondary,
+                            "Tap to visit our website",
+                            color = EmergencyRed,
                             fontSize = 12.sp,
-                            lineHeight = 17.sp
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
-
-            Spacer(Modifier.height(24.dp))
-
 
             Spacer(Modifier.height(40.dp))
         }
@@ -263,48 +269,5 @@ fun SettingsToggleRow(
                 uncheckedTrackColor = SurfaceElevated
             )
         )
-    }
-}
-
-@Composable
-fun SettingsInfoRow(
-    icon: ImageVector,
-    iconColor: Color,
-    title: String,
-    subtitle: String,
-    badge: String? = null
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(iconColor.copy(0.15f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, null, tint = iconColor, modifier = Modifier.size(20.dp))
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Text(subtitle, color = TextSecondary, fontSize = 11.sp)
-        }
-        if (badge != null) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(OffGray.copy(0.25f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
-                Text(badge, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-
     }
 }

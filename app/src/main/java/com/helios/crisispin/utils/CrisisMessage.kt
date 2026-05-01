@@ -21,9 +21,7 @@ data class CrisisMessage(
         
         const val V2_VER = 0x02.toByte()
         const val FLAG_ACK = 0x01
-
-        private val TYPE_MAP = mapOf("SOS" to 1, "MED" to 2, "FIRE" to 3, "PANIC" to 4, "HELP" to 5)
-        private val REV_TYPE_MAP = TYPE_MAP.entries.associate { it.value to it.key }
+        const val FLAG_CANCEL = 0x02 // FIX 3: Cancel flag added
 
         /** Unified decoder with version detection */
         fun decodeFromBle(bytes: ByteArray): CrisisMessage? {
@@ -46,7 +44,9 @@ data class CrisisMessage(
                 buffer.position(3) // Skip header
 
                 val typeCode = buffer.get().toInt()
-                val type = REV_TYPE_MAP[typeCode] ?: return null
+                val type = when(typeCode) {
+                    1 -> "SOS"; 2 -> "MED"; 3 -> "FIRE"; 4 -> "PANIC"; 5 -> "HELP"; else -> "SOS"
+                }
                 
                 val originId = buffer.getInt().toUInt().toLong().toString(36).padStart(6, '0')
                 val msgId = buffer.getInt().toUInt().toLong().toString(36).padStart(6, '0')
@@ -66,6 +66,8 @@ data class CrisisMessage(
                 null
             }
         }
+
+        private val TYPE_MAP = mapOf("SOS" to 1, "MED" to 2, "FIRE" to 3, "PANIC" to 4, "HELP" to 5)
 
         fun decode(raw: String): CrisisMessage? {
             return try {
@@ -123,6 +125,7 @@ data class CrisisMessage(
         }
 
         private fun encodeV1(msg: CrisisMessage): String {
+            // Minimal V1 for fallback - max 1 visited
             val visitedStr = msg.visited.filter { it != msg.originId }.take(1).joinToString(",")
             val base = "${msg.type}|${msg.originId}|${msg.msgId}|${msg.hop}"
             return if (visitedStr.isNotEmpty()) "$base|$visitedStr" else base
@@ -136,6 +139,14 @@ data class CrisisMessage(
         fun createAck(msg: CrisisMessage, myDeviceId: String): CrisisMessage {
             return msg.copy(
                 flags = msg.flags or FLAG_ACK,
+                visited = setOf(myDeviceId)
+            )
+        }
+
+        // FIX 3: Create Cancel message
+        fun createCancel(msg: CrisisMessage, myDeviceId: String): CrisisMessage {
+            return msg.copy(
+                flags = msg.flags or FLAG_CANCEL,
                 visited = setOf(myDeviceId)
             )
         }

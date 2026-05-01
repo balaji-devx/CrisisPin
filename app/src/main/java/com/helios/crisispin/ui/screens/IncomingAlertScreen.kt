@@ -6,7 +6,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.BluetoothSearching
 import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.LocalPolice
+import androidx.compose.material.icons.rounded.DoNotDisturb
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -168,7 +173,7 @@ fun IncomingAlertScreen(
             ) {
                 AlertInfoRow(Icons.Rounded.AccessTime, "Timestamp", "Just now")
                 AlertInfoRow(Icons.Rounded.LocationOn, "Distance", "Nearby (~30m)")
-                AlertInfoRow(Icons.Rounded.BluetoothSearching, "Source", "BLE Broadcast")
+                AlertInfoRow(Icons.AutoMirrored.Rounded.BluetoothSearching, "Source", "BLE Broadcast")
 
                 Box(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
