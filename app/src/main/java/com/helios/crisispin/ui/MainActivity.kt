@@ -38,6 +38,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.helios.crisispin.service.CrisisPinService
 import com.helios.crisispin.ui.screens.*
 import com.helios.crisispin.ui.theme.*
+import com.helios.crisispin.utils.HistoryPrefs
 import com.helios.crisispin.utils.PermissionHelper
 
 sealed class Screen {
@@ -47,16 +48,16 @@ sealed class Screen {
     object Home       : Screen()
     data class AlertSent(val alertType: String) : Screen()
     data class IncomingAlert(val alertType: String) : Screen()
-    object Alerts     : Screen()   // received alerts only
-    object History    : Screen()   // all alerts (sent + received)
+    object Alerts     : Screen()   
+    object History    : Screen()   
     object Settings   : Screen()
 }
 
 class MainActivity : ComponentActivity() {
 
     companion object {
-        // Used by notification PendingIntent to pass the alert message on tap
         const val EXTRA_SHOW_ALERT = "show_alert_message"
+        const val ACTION_METRICS_UPDATED = "com.helios.crisispin.METRICS_UPDATED"
     }
 
     private lateinit var prefs: SharedPreferences
@@ -68,13 +69,14 @@ class MainActivity : ComponentActivity() {
     private var receivedMessageState by mutableStateOf("No Alerts")
     private var nearbyDevicesState   by mutableStateOf(0)
     private var alertsReceivedState  by mutableStateOf(0)
+    private var confidenceScoreState by mutableStateOf(0)  // 0-100, from service metrics
     private var currentScreen        by mutableStateOf<Screen>(Screen.Splash)
-    private var alertHistoryState    by mutableStateOf<List<AlertHistoryItem>>(emptyList())
+    private var alertHistoryState    by mutableStateOf<List<HistoryPrefs.HistoryRecord>>(emptyList())
     private var alertSoundEnabled    by mutableStateOf(true)
     private var vibrationEnabled     by mutableStateOf(true)
     private var eventModeEnabled     by mutableStateOf(false)
     private var pendingIncomingAlert by mutableStateOf<String?>(null)
-    private var pendingIncomingMsgEncoded: String? = null  // full encoded CrisisMessage for relay
+    private var pendingIncomingMsgEncoded: String? = null  
     private var showBtBottomSheet    by mutableStateOf(false)
 
     @Volatile private var isShowingIncomingAlert = false
@@ -89,7 +91,11 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ -> startCrisisPinService() }
+    ) { results -> 
+        if (results.values.all { it }) {
+            startCrisisPinService()
+        }
+    }
 
     private val serviceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -98,8 +104,7 @@ class MainActivity : ComponentActivity() {
                     val message = intent.getStringExtra(CrisisPinService.EXTRA_MESSAGE) ?: return
                     receivedMessageState = message
                     alertsReceivedState++
-                    nearbyDevicesState = (nearbyDevicesState + 1).coerceAtMost(99)
-                    alertHistoryState = loadHistoryFromPrefs()
+                    alertHistoryState = HistoryPrefs.load(this@MainActivity)
                     val encoded = intent.getStringExtra(CrisisPinService.EXTRA_MSG_ENCODED)
                     if (!isShowingIncomingAlert) showIncomingAlert(message, encoded)
                 }
@@ -107,6 +112,10 @@ class MainActivity : ComponentActivity() {
                     bleActiveState = intent.getBooleanExtra(CrisisPinService.EXTRA_BLE_ACTIVE, false)
                 CrisisPinService.ACTION_RELAY_STATE_CHANGED ->
                     isRelayingState = intent.getBooleanExtra(CrisisPinService.EXTRA_RELAY_ACTIVE, false)
+                ACTION_METRICS_UPDATED -> {
+                    nearbyDevicesState = intent.getIntExtra("nearby_count", 0)
+                    confidenceScoreState = intent.getIntExtra("confidence_score", 0)
+                }
             }
         }
     }
@@ -129,13 +138,13 @@ class MainActivity : ComponentActivity() {
             addAction(CrisisPinService.ACTION_ALERT_RECEIVED)
             addAction(CrisisPinService.ACTION_BLE_STATE_CHANGED)
             addAction(CrisisPinService.ACTION_RELAY_STATE_CHANGED)
+            addAction(ACTION_METRICS_UPDATED)
         }
         localBroadcast.registerReceiver(serviceReceiver, filter)
         bleActiveState = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.isEnabled
-        alertHistoryState = loadHistoryFromPrefs()
+        alertHistoryState = HistoryPrefs.load(this)
         requestBatteryOptimizationExemption()
 
-        // Handle cold-start from notification tap
         handleIncomingIntent(intent)
 
         setContent {
@@ -146,7 +155,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Called when activity is already alive and notification is tapped (requires singleTop in manifest)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingIntent(intent)
@@ -155,7 +163,6 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         val alertMessage = intent?.getStringExtra(EXTRA_SHOW_ALERT) ?: return
         if (alertMessage.isNotBlank() && !isShowingIncomingAlert) {
-            // 300ms delay lets Compose initialize before navigating on cold start
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 showIncomingAlert(alertMessage)
             }, 300)
@@ -175,48 +182,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun loadHistoryFromPrefs(): List<AlertHistoryItem> {
-        val hp = getSharedPreferences("crisispin_history", Context.MODE_PRIVATE)
-        val ids = hp.getStringSet("history_ids", emptySet()) ?: return emptyList()
-        return ids.mapNotNull { id ->
-            val label    = hp.getString("h_label_$id", null) ?: return@mapNotNull null
-            val emoji    = hp.getString("h_emoji_$id", "🚨") ?: "🚨"
-            val colorHex = hp.getInt("h_color_$id", 0xFFE53935.toInt())
-            val ts       = hp.getLong("h_ts_$id", 0L)
-            val dir      = hp.getString("h_dir_$id", "received") ?: "received"
-            AlertHistoryItem(id = id, type = label, emoji = emoji,
-                colorHex = colorHex, timestampMs = ts, direction = dir)
-        }.sortedByDescending { it.timestampMs }
-    }
-
-    private fun saveHistoryEntry(alertType: String, direction: String) {
-        val hp = getSharedPreferences("crisispin_history", Context.MODE_PRIVATE)
-        val ids = hp.getStringSet("history_ids", mutableSetOf())!!.toMutableSet()
-        val id = "${System.currentTimeMillis()}_${alertType}_$direction"
-        val label = when (alertType.uppercase()) {
-            "SOS" -> "SOS Emergency"; "MED" -> "Medical Alert"
-            "FIRE" -> "Fire Alert";   "PANIC" -> "Panic Alert"
-            "HELP" -> "General Help"; else -> "$alertType Alert"
-        }
-        val emoji    = when (alertType.uppercase()) { "MED"->"🏥";"FIRE"->"🔥";"PANIC"->"⚠️";"HELP"->"🆘";else->"🚨" }
-        val colorHex = when (alertType.uppercase()) {
-            "MED"->0xFF1E88E5.toInt();"FIRE"->0xFFFF9800.toInt()
-            "PANIC"->0xFF9C27B0.toInt();"HELP"->0xFF43A047.toInt();else->0xFFE53935.toInt()
-        }
-        hp.edit()
-            .putStringSet("history_ids", ids + id)
-            .putString("h_label_$id", label).putString("h_emoji_$id", emoji)
-            .putInt("h_color_$id", colorHex).putLong("h_ts_$id", System.currentTimeMillis())
-            .putString("h_dir_$id", direction).apply()
-    }
-
     private fun dismissAlert() {
         isShowingIncomingAlert = false
         pendingIncomingAlert = null
         pendingIncomingMsgEncoded = null
-        startService(Intent(this, CrisisPinService::class.java).apply {
+        val intent = Intent(this, CrisisPinService::class.java).apply {
             action = CrisisPinService.ACTION_DISMISS_ALERT
-        })
+        }
+        startService(intent)
     }
 
     @Composable
@@ -307,13 +280,16 @@ class MainActivity : ComponentActivity() {
                     currentScreen = if (PermissionHelper.hasPermissions(this@MainActivity)) Screen.Home else Screen.Permission
                 })
                 is Screen.Permission -> PermissionScreen(onPermissionsGranted = {
-                    permissionLauncher.launch(PermissionHelper.getRequiredPermissions())
-                    currentScreen = Screen.Home
+                    permissionLauncher.launch(PermissionHelper.getRequiredPermissions(this@MainActivity))
                 })
                 is Screen.Home -> {
                     LaunchedEffect(Unit) {
-                        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-                        if (!adapter.isEnabled) showBtBottomSheet = true else startCrisisPinService()
+                        if (!PermissionHelper.hasPermissions(this@MainActivity)) {
+                            currentScreen = Screen.Permission
+                        } else {
+                            val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                            if (!adapter.isEnabled) showBtBottomSheet = true else startCrisisPinService()
+                        }
                     }
                     HomeScreen(
                         bleActive = bleActiveState, isBroadcasting = isBroadcastingState,
@@ -328,8 +304,8 @@ class MainActivity : ComponentActivity() {
                                 putExtra(CrisisPinService.EXTRA_ALERT_TYPE, alertType)
                             })
                             isBroadcastingState = true
-                            saveHistoryEntry(alertType, "sent")
-                            alertHistoryState = loadHistoryFromPrefs()
+                            HistoryPrefs.save(this@MainActivity, alertType, "sent")
+                            alertHistoryState = HistoryPrefs.load(this@MainActivity)
                             currentScreen = Screen.AlertSent(alertType)
                         },
                         onStopAlert = {
@@ -345,8 +321,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onNavigate = { dest ->
                             currentScreen = when (dest) {
-                                "alerts"   -> Screen.Alerts    // received only
-                                "history"  -> Screen.History   // all
+                                "alerts"   -> Screen.Alerts    
+                                "history"  -> Screen.History   
                                 "settings" -> Screen.Settings
                                 else       -> Screen.Home
                             }
@@ -361,6 +337,8 @@ class MainActivity : ComponentActivity() {
                 })
                 is Screen.IncomingAlert -> IncomingAlertScreen(
                     alertType = screen.alertType,
+                    confidenceScore = confidenceScoreState,
+                    nearbyDeviceCount = nearbyDevicesState,
                     onAcknowledge = {
                         pendingIncomingAlert?.let { alertType ->
                             startService(Intent(this@MainActivity, CrisisPinService::class.java).apply {
@@ -374,15 +352,13 @@ class MainActivity : ComponentActivity() {
                     onIgnore = { dismissAlert(); currentScreen = Screen.Home },
                     onCallSecurity = { dismissAlert(); currentScreen = Screen.Home }
                 )
-                // Alerts = received only
                 is Screen.Alerts -> AlertHistoryScreen(
-                    alerts = alertHistoryState.filter { it.direction == "received" },
+                    alerts = alertHistoryState.filter { it.direction == "received" }.map { it.toLegacy() },
                     title = "Received Alerts",
                     onBack = { currentScreen = Screen.Home }
                 )
-                // History = everything
                 is Screen.History -> AlertHistoryScreen(
-                    alerts = alertHistoryState,
+                    alerts = alertHistoryState.map { it.toLegacy() },
                     title = "Alert History",
                     onBack = { currentScreen = Screen.Home }
                 )
@@ -404,8 +380,9 @@ class MainActivity : ComponentActivity() {
                         })
                     },
                     onBluetoothToggle = { enable ->
+                        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
                         if (enable) enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                        else @Suppress("DEPRECATION") (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.disable()
+                        else @Suppress("DEPRECATION") adapter.disable()
                     },
                     onBack = { currentScreen = Screen.Home }
                 )
@@ -413,19 +390,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun HistoryPrefs.HistoryRecord.toLegacy(): com.helios.crisispin.ui.screens.AlertHistoryItem {
+        return com.helios.crisispin.ui.screens.AlertHistoryItem(
+            id = id, type = label, emoji = emoji, colorHex = colorHex, timestampMs = timestampMs, direction = direction
+        )
+    }
+
     private fun startCrisisPinService() {
         if (PermissionHelper.hasPermissions(this)) CrisisPinService.startService(this)
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (PermissionHelper.hasPermissions(this)) startCrisisPinService()
-    }
-
     override fun onResume() {
         super.onResume()
-        alertHistoryState = loadHistoryFromPrefs()
+        alertHistoryState = HistoryPrefs.load(this)
     }
 
     override fun onDestroy() {

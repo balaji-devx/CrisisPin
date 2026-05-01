@@ -7,6 +7,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -29,7 +31,6 @@ fun SettingsScreen(
     onAlertSoundToggle: (Boolean) -> Unit,
     onVibrationToggle: (Boolean) -> Unit,
     onBluetoothToggle: (Boolean) -> Unit,
-    onLogout: () -> Unit = {},
     onBack: () -> Unit
 ) {
     Column(
@@ -50,7 +51,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Rounded.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = TextPrimary)
             }
             Spacer(Modifier.width(4.dp))
             Column {
@@ -84,7 +85,7 @@ fun SettingsScreen(
             SettingsCard {
                 // Real sound toggle — passed to AlertManager.setSoundEnabled()
                 SettingsToggleRow(
-                    icon = Icons.Rounded.VolumeUp,
+                    icon = Icons.AutoMirrored.Rounded.VolumeUp,
                     iconColor = Color(0xFF1E88E5),
                     title = "Alert Sound",
                     subtitle = if (alertSoundEnabled) "Voice announcement on alert · On" else "Muted",
@@ -195,25 +196,6 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            Button(
-                onClick = onLogout,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed.copy(0.15f))
-            ) {
-                Icon(Icons.Rounded.Logout, null,
-                    tint = EmergencyRed, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Sign Out",
-                    color = EmergencyRed,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(Modifier.height(32.dp))
 
             Spacer(Modifier.height(40.dp))
         }
