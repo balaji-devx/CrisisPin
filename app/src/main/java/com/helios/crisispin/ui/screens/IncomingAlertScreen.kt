@@ -6,7 +6,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.BluetoothSearching
 import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.LocalPolice
+import androidx.compose.material.icons.rounded.DoNotDisturb
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,6 +20,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -26,8 +33,22 @@ fun IncomingAlertScreen(
     alertType: String,
     onAcknowledge: () -> Unit,
     onIgnore: () -> Unit,
-    onCallSecurity: () -> Unit
+    onCallSecurity: () -> Unit,
+    confidenceScore: Int = 0,  // 0-100, from service broadcast
+    nearbyDeviceCount: Int = 0  // actual count from service
 ) {
+    // Compute confidence dynamically from nearby device count
+    // If no service broadcast received yet, use parameter values (could be 0 on first render)
+    val effectiveConfidence = if (confidenceScore > 0) confidenceScore else {
+        // Fallback: estimate from device count (e.g., 1 device = 30%, 3+ = 75%)
+        when {
+            nearbyDeviceCount >= 3 -> 75
+            nearbyDeviceCount == 2 -> 50
+            nearbyDeviceCount == 1 -> 30
+            else -> 0
+        }
+    }
+
     val alertColor = when (alertType.uppercase()) {
         "MED" -> MedicalBlue; "FIRE" -> FireOrange; "PANIC" -> PanicPurple; else -> EmergencyRed
     }
@@ -77,6 +98,65 @@ fun IncomingAlertScreen(
 
             Spacer(Modifier.height(32.dp))
 
+            // Trust meter section - shows alert confidence and nearby confirmations
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Alert Confidence", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+
+                val animatedScore by animateFloatAsState(
+                    targetValue = effectiveConfidence / 100f,
+                    animationSpec = tween(600)
+                )
+                LinearProgressIndicator(
+                    progress = { animatedScore },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = when {
+                        effectiveConfidence >= 70 -> GeneralGreen
+                        effectiveConfidence >= 40 -> WarningAmber
+                        else -> EmergencyRed
+                    },
+                    trackColor = SurfaceCard
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        when {
+                            effectiveConfidence >= 70 -> "Widely confirmed nearby"
+                            effectiveConfidence >= 40 -> "Some confirmations nearby"
+                            else -> "Unverified alert"
+                        },
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                    Text(
+                        "$effectiveConfidence%",
+                        color = when {
+                            effectiveConfidence >= 70 -> GeneralGreen
+                            effectiveConfidence >= 40 -> WarningAmber
+                            else -> EmergencyRed
+                        },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+
+                Text(
+                    when {
+                        nearbyDeviceCount > 0 -> "Confirmed by $nearbyDeviceCount nearby device${if (nearbyDeviceCount != 1) "s" else ""}"
+                        else -> "Waiting for nearby confirmations…"
+                    },
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.semantics { contentDescription = "Alert confirmed by $nearbyDeviceCount devices" }
+                )
+            }
+
+            Spacer(Modifier.height(20.dp))
+
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Box(
                     modifier = Modifier.size(120.dp).scale(iconPulse).clip(CircleShape)
@@ -93,7 +173,7 @@ fun IncomingAlertScreen(
             ) {
                 AlertInfoRow(Icons.Rounded.AccessTime, "Timestamp", "Just now")
                 AlertInfoRow(Icons.Rounded.LocationOn, "Distance", "Nearby (~30m)")
-                AlertInfoRow(Icons.Rounded.BluetoothSearching, "Source", "BLE Broadcast")
+                AlertInfoRow(Icons.AutoMirrored.Rounded.BluetoothSearching, "Source", "BLE Broadcast")
 
                 Box(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -118,7 +198,8 @@ fun IncomingAlertScreen(
             ) {
                 Button(
                     onClick = { if (!dismissed) { dismissed = true; onAcknowledge() } },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    modifier = Modifier.fillMaxWidth().height(54.dp)
+                        .semantics { contentDescription = "Acknowledge and relay emergency alert to nearby devices" },
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = alertColor),
                     enabled = !dismissed
@@ -131,7 +212,8 @@ fun IncomingAlertScreen(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(
                         onClick = { if (!dismissed) { dismissed = true; onCallSecurity() } },
-                        modifier = Modifier.weight(1f).height(50.dp),
+                        modifier = Modifier.weight(1f).height(50.dp)
+                            .semantics { contentDescription = "Contact security personnel about this emergency" },
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         enabled = !dismissed
@@ -143,9 +225,10 @@ fun IncomingAlertScreen(
 
                     OutlinedButton(
                         onClick = { if (!dismissed) { dismissed = true; onIgnore() } },
-                        modifier = Modifier.weight(1f).height(50.dp),
+                        modifier = Modifier.weight(1f).height(50.dp)
+                            .semantics { contentDescription = "Dismiss and ignore this alert" },
                         shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                         enabled = !dismissed
                     ) {
                         Icon(Icons.Rounded.DoNotDisturb, null, Modifier.size(18.dp))

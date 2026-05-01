@@ -1,52 +1,42 @@
 package com.helios.crisispin.utils
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 object PermissionHelper {
 
-    private const val REQUEST_CODE = 101
-
-    // Accepts plain Context so BootReceiver can call it (no Activity needed)
-    // Checks only BLE permissions — notification permission is optional, missing
-    // it just means no heads-up banners, but scanning still works fine
     fun hasPermissions(context: Context): Boolean {
-        return getBluetoothPermissions().all {
+        return getRequiredPermissions(context).all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
-    fun getRequiredPermissions(): Array<String> {
+    /**
+     * Logic for required permissions:
+     * Android 12+ (API 31+): BLUETOOTH_SCAN (with neverForLocation flag in manifest), 
+     * BLUETOOTH_ADVERTISE, and BLUETOOTH_CONNECT. Location is NOT strictly required for scanning 
+     * if the flag is present, but some devices still behave better with it.
+     * Android 13+ (API 33+): POST_NOTIFICATIONS is required for Foreground Service notifications.
+     */
+    fun getRequiredPermissions(context: Context? = null): Array<String> {
         val p = mutableListOf<String>()
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             p += Manifest.permission.BLUETOOTH_SCAN
             p += Manifest.permission.BLUETOOTH_ADVERTISE
             p += Manifest.permission.BLUETOOTH_CONNECT
+            // We do NOT add ACCESS_FINE_LOCATION here because we use neverForLocation
+        } else {
+            p += Manifest.permission.ACCESS_FINE_LOCATION
         }
-        p += Manifest.permission.ACCESS_FINE_LOCATION
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             p += Manifest.permission.POST_NOTIFICATIONS
         }
-        return p.toTypedArray()
-    }
-
-    fun requestPermissions(activity: Activity) {
-        ActivityCompat.requestPermissions(activity, getRequiredPermissions(), REQUEST_CODE)
-    }
-
-    private fun getBluetoothPermissions(): Array<String> {
-        val p = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            p += Manifest.permission.BLUETOOTH_SCAN
-            p += Manifest.permission.BLUETOOTH_ADVERTISE
-            p += Manifest.permission.BLUETOOTH_CONNECT
-        }
-        p += Manifest.permission.ACCESS_FINE_LOCATION
+        
         return p.toTypedArray()
     }
 }
